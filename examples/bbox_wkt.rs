@@ -17,6 +17,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let db = osmx::Database::open(&file_path)?;
     let txn = osmx::Transaction::begin(&db)?;
 
+    let ways = txn.ways()?;
+    let locations = txn.locations()?;
+
     let bbox: Vec<f64> = args[2..]
         .iter()
         .map(|s| s.parse::<f64>().unwrap())
@@ -42,7 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Print names and WKT geometries for each way
     // let mut cursor = txn.open_ro_cursor(locations)?;
     for way_id in way_ids {
-        let way = txn.get_way_by_id(way_id)?;
+        let way = ways.get(way_id).unwrap();
 
         for (key, val) in way.tags() {
             if key == "name" {
@@ -51,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         let coords = way.nodes().map(|node_id| {
-            let loc = txn.get_location_by_id(node_id).unwrap();
+            let loc = locations.get(node_id).unwrap();
             (loc.lon(), loc.lat())
         });
 

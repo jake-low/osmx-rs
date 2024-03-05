@@ -16,7 +16,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let db = osmx::Database::open(&file_path)?;
     let txn = osmx::Transaction::begin(&db)?;
-    let way = txn.get_way_by_id(way_id)?;
+    // let way = txn.get_way_by_id(way_id)?;
+    let ways = txn.ways()?;
+    let locations = txn.locations()?;
+
+    let way = ways.get(way_id).expect("way not found");
 
     for (key, val) in way.tags() {
         if key == "name" {
@@ -25,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let coords = way.nodes().map(|node_id| {
-        let loc = txn.get_location_by_id(node_id).unwrap();
+        let loc = locations.get(node_id).unwrap();
         (loc.lon(), loc.lat())
     });
 
