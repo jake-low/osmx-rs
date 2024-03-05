@@ -157,7 +157,7 @@ impl<'db> Transaction<'db> {
     }
 }
 
-// TODO: Ways and Relations will need similar implementations; can they all be parameterized
+// TODO: Nodes, Ways and Relations have similar implementations; can they all be parameterized
 // from the same type? e.g. type Nodes = Reader<Node> etc
 
 pub struct Nodes<'txn> {
@@ -165,8 +165,8 @@ pub struct Nodes<'txn> {
     table: lmdb::Database,
 }
 
-impl<'a, 's> Nodes<'a> {
-    pub fn get(&self, id: u64) -> Option<Node<'a>> {
+impl<'txn> Nodes<'txn> {
+    pub fn get(&self, id: u64) -> Option<Node<'txn>> {
         match self.txn.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(Node::from_bytes(raw_val)),
             Err(lmdb::Error::NotFound) => None,
@@ -174,7 +174,7 @@ impl<'a, 's> Nodes<'a> {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Node<'a>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u64, Node<'txn>)> {
         let cursor = self.txn.open_ro_cursor(self.table).unwrap();
         Gen::new(|co| async move {
             let mut cursor = cursor;
@@ -194,8 +194,8 @@ pub struct Ways<'txn> {
     table: lmdb::Database,
 }
 
-impl<'a, 's> Ways<'a> {
-    pub fn get(&self, id: u64) -> Option<Way<'a>> {
+impl<'txn> Ways<'txn> {
+    pub fn get(&self, id: u64) -> Option<Way<'txn>> {
         match self.txn.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(Way::from_bytes(raw_val)),
             Err(lmdb::Error::NotFound) => None,
@@ -203,7 +203,7 @@ impl<'a, 's> Ways<'a> {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Way<'a>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u64, Way<'txn>)> {
         let cursor = self.txn.open_ro_cursor(self.table).unwrap();
         Gen::new(|co| async move {
             let mut cursor = cursor;
@@ -223,8 +223,8 @@ pub struct Relations<'txn> {
     table: lmdb::Database,
 }
 
-impl<'a, 's> Relations<'a> {
-    pub fn get(&self, id: u64) -> Option<Relation<'a>> {
+impl<'txn> Relations<'txn> {
+    pub fn get(&self, id: u64) -> Option<Relation<'txn>> {
         match self.txn.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(Relation::from_bytes(raw_val)),
             Err(lmdb::Error::NotFound) => None,
@@ -232,7 +232,7 @@ impl<'a, 's> Relations<'a> {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Relation<'a>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u64, Relation<'txn>)> {
         let cursor = self.txn.open_ro_cursor(self.table).unwrap();
         Gen::new(|co| async move {
             let mut cursor = cursor;
@@ -252,8 +252,8 @@ pub struct Locations<'txn> {
     table: lmdb::Database,
 }
 
-impl<'a> Locations<'a> {
-    pub fn get(&self, id: u64) -> Option<Location<'a>> {
+impl<'txn> Locations<'txn> {
+    pub fn get(&self, id: u64) -> Option<Location<'txn>> {
         match self.txn.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(Location::from_bytes(raw_val)),
             Err(lmdb::Error::NotFound) => None,
@@ -261,7 +261,7 @@ impl<'a> Locations<'a> {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Location<'a>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (u64, Location<'txn>)> {
         let cursor = self.txn.open_ro_cursor(self.table).unwrap();
         Gen::new(|co| async move {
             let mut cursor = cursor;
