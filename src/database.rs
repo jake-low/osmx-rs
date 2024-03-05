@@ -1,20 +1,10 @@
-// This crate does nothing right now; the only code is in the examples directory.
-// I ported the examples first to get a feel for what abstractions this crate
-// should provide; now that they are working I'm going to start refactoring
-// repetitive code out of those programs and into here.
-
 use std::error::Error;
 use std::path::Path;
 
 use genawaiter::rc::Gen;
-
 use lmdb::{Cursor, Transaction as LmdbTransaction};
 
 use crate::types::{Location, Node, Region, Relation, Way};
-
-// use lmdb_sys::{MDB_FIRST, MDB_NEXT};
-
-// use s2::cellid::CellID;
 
 const CELL_INDEX_LEVEL: u64 = 16;
 
@@ -262,7 +252,7 @@ pub struct Locations<'txn> {
     table: lmdb::Database,
 }
 
-impl<'a, 's> Locations<'a> {
+impl<'a> Locations<'a> {
     pub fn get(&self, id: u64) -> Option<Location<'a>> {
         match self.txn.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(Location::from_bytes(raw_val)),

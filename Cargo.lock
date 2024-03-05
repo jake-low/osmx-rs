@@ -218,6 +218,7 @@ dependencies = [
  "capnpc",
  "genawaiter",
  "itertools",
+ "lazy_static",
  "lmdb",
  "roaring",
  "s2",

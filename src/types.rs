@@ -1,44 +1,39 @@
-// This crate does nothing right now; the only code is in the examples directory.
-// I ported the examples first to get a feel for what abstractions this crate
-// should provide; now that they are working I'm going to start refactoring
-// repetitive code out of those programs and into here.
-
-use std::cell::OnceCell;
-
-use capnp::{
-    message::{ReaderOptions, TypedReader},
-    serialize::BufferSegments,
-};
-
+use crate::messages_capnp;
+use capnp::message::{ReaderOptions, TypedReader};
+use capnp::serialize::BufferSegments;
 use itertools::Itertools;
 
-use crate::messages_capnp;
+#[derive(Debug, PartialEq, Eq)]
+pub enum ElementId {
+    Node(u64),
+    Way(u64),
+    Relation(u64),
+}
+
+/// A reader for values in the `locations` table, which store the coordinates of OSM Nodes.
+pub struct Location<'a> {
+    buf: &'a [u8],
+}
 
 const COORDINATE_PRECISION: i32 = 10000000;
 
-pub struct Region {
-    pub(crate) cells: s2::cellunion::CellUnion,
-}
+impl<'a> Location<'a> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Self {
+        Self { buf: bytes }
+    }
 
-const COVERER: OnceCell<s2::region::RegionCoverer> = OnceCell::new();
+    pub fn lon(&self) -> f64 {
+        let as_i32 = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
+        as_i32 as f64 / COORDINATE_PRECISION as f64
+    }
 
-impl Region {
-    pub fn from_bbox(west: f64, south: f64, east: f64, north: f64) -> Self {
-        let rect = s2::rect::Rect::from_degrees(south, west, north, east);
-
-        let cells = COVERER
-            .get_or_init(|| s2::region::RegionCoverer {
-                min_level: 4,
-                max_level: 16,
-                level_mod: 1,
-                max_cells: 8,
-            })
-            .covering(&rect);
-
-        Self { cells }
+    pub fn lat(&self) -> f64 {
+        let as_i32 = i32::from_le_bytes(self.buf[4..8].try_into().unwrap());
+        as_i32 as f64 / COORDINATE_PRECISION as f64
     }
 }
 
+/// A reader for a value in the `nodes` table, which stores the tags and metadata for OSM Nodes.
 pub struct Node<'a> {
     reader: TypedReader<BufferSegments<&'a [u8]>, messages_capnp::node::Owned>,
 }
@@ -69,6 +64,7 @@ impl<'a> Node<'a> {
     }
 }
 
+/// A reader for an OSM Way stored in the `ways` table, including its tags, metadata, and list of constituent Nodes.
 pub struct Way<'a> {
     reader: TypedReader<BufferSegments<&'a [u8]>, messages_capnp::way::Owned>,
 }
@@ -107,6 +103,7 @@ impl<'a> Way<'a> {
     }
 }
 
+/// A reader for an OSM Relation in the `relations` table, including its tags, metadata, and list of members.
 pub struct Relation<'a> {
     reader: TypedReader<BufferSegments<&'a [u8]>, messages_capnp::relation::Owned>,
 }
@@ -147,13 +144,7 @@ impl<'a> Relation<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ElementId {
-    Node(u64),
-    Way(u64),
-    Relation(u64),
-}
-
+/// A reader for a member reference of an OSM Relation. Created by calling [Relation::members]
 pub struct RelationMember<'a> {
     reader: messages_capnp::relation_member::Reader<'a>,
 }
@@ -175,23 +166,26 @@ impl<'a> RelationMember<'a> {
     }
 }
 
-pub struct Location<'a> {
-    buf: &'a [u8],
+pub struct Region {
+    pub(crate) cells: s2::cellunion::CellUnion,
 }
 
-impl<'a> Location<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Self {
-        Self { buf: bytes }
-    }
+lazy_static! {
+    static ref COVERER: s2::region::RegionCoverer = {
+        s2::region::RegionCoverer {
+            min_level: 4,
+            max_level: 16,
+            level_mod: 1,
+            max_cells: 8,
+        }
+    };
+}
 
-    pub fn lon(&self) -> f64 {
-        let as_i32 = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
-        as_i32 as f64 / COORDINATE_PRECISION as f64
-    }
-
-    pub fn lat(&self) -> f64 {
-        let as_i32 = i32::from_le_bytes(self.buf[4..8].try_into().unwrap());
-        as_i32 as f64 / COORDINATE_PRECISION as f64
+impl Region {
+    pub fn from_bbox(west: f64, south: f64, east: f64, north: f64) -> Self {
+        let rect = s2::rect::Rect::from_degrees(south, west, north, east);
+        let cells = COVERER.covering(&rect);
+        Self { cells }
     }
 }
 
