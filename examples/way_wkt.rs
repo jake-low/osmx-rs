@@ -14,25 +14,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     let file_path = std::path::PathBuf::from(&args[1]);
     let way_id: u64 = str::parse(&args[2])?;
 
+    // open the .osmx database file
     let db = osmx::Database::open(&file_path)?;
+    // begin a read transaction (ensures that all reads see a coherent snapshot
+    // of the data, even if another process is writing at the same time)
     let txn = osmx::Transaction::begin(&db)?;
-    // let way = txn.get_way_by_id(way_id)?;
+
+    // get the ways table (containing tags, metadata, and node refs for each way)
     let ways = txn.ways()?;
+    // get the locations table (containing coordinates for each node)
     let locations = txn.locations()?;
 
+    // look up the given way ID in the ways table
     let way = ways.get(way_id).expect("way not found");
 
-    for (key, val) in way.tags() {
-        if key == "name" {
-            print!("{}", val);
-        }
+    // if the way has a "name" tag, print it
+    if let Some(name) = way.tag("name") {
+        print!("{}", name);
     }
 
+    // get the way's node refs, and look up each node's location
     let coords = way.nodes().map(|node_id| {
         let loc = locations.get(node_id).unwrap();
         (loc.lon(), loc.lat())
     });
 
+    // print the resulting coordinate sequence as a WKT linestring
     println!(
         "\tLINESTRING ({})",
         coords

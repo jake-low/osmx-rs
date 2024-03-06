@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::marker::PhantomData;
 use std::path::Path;
 
 use genawaiter::rc::Gen;
@@ -8,6 +9,7 @@ use crate::types::{Location, Node, Region, Relation, Way};
 
 const CELL_INDEX_LEVEL: u64 = 16;
 
+/// A handle to an OSMX database file
 pub struct Database {
     env: lmdb::Environment,
 
@@ -26,6 +28,7 @@ pub struct Database {
 }
 
 impl Database {
+    /// Open the given file path as an OSMX Database
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
         let env = lmdb::Environment::new()
             .set_flags(
@@ -62,214 +65,203 @@ impl Database {
     }
 }
 
+/// A handle which can be used to read from the Database. The handle
+/// ensures that all reads see the same snapshot of the data, even if
+/// it is being modified simultaneously by another process.
 pub struct Transaction<'db> {
     db: &'db Database,
-    txn: lmdb::RoTransaction<'db>, // TODO support write txns
+    txn: lmdb::RoTransaction<'db>, // TODO support write txns?
 }
 
 impl<'db> Transaction<'db> {
+    /// Create a new Transaction from the given Database.
     pub fn begin(db: &'db Database) -> Result<Self, Box<dyn Error>> {
         let txn = db.env.begin_ro_txn()?;
         Ok(Self { db, txn })
     }
 
+    /// Get the Locations table, which maps OSM Node IDs to locations.
     pub fn locations(&self) -> Result<Locations, Box<dyn Error>> {
-        Ok(Locations {
-            txn: &self.txn,
-            table: self.db.locations,
-        })
+        Ok(Locations::new(&self.txn, self.db.locations))
     }
 
+    /// Get the Nodes table, which maps OSM Node IDs to their metadata and tags.
     pub fn nodes(&self) -> Result<Nodes, Box<dyn Error>> {
-        Ok(Nodes {
-            txn: &self.txn,
-            table: self.db.nodes,
-        })
+        Ok(Nodes::new(&self.txn, self.db.nodes))
     }
 
+    /// Get the Ways table, which maps OSM Way IDs to their metadata, tags, and node refs.
     pub fn ways(&self) -> Result<Ways, Box<dyn Error>> {
-        Ok(Ways {
-            txn: &self.txn,
-            table: self.db.ways,
-        })
+        Ok(Ways::new(&self.txn, self.db.ways))
     }
 
+    /// Get the Relations table, which maps OSM Relation IDs to their metadata, tags, and member refs.
     pub fn relations(&self) -> Result<Relations, Box<dyn Error>> {
-        Ok(Relations {
-            txn: &self.txn,
-            table: self.db.relations,
-        })
+        Ok(Relations::new(&self.txn, self.db.relations))
     }
 
-    pub fn get_ways_for_node(
-        &'db self,
-        id: u64,
-    ) -> Result<impl Iterator<Item = u64> + 'db, Box<dyn Error>> {
-        let mut cursor = self.txn.open_ro_cursor(self.db.node_way)?;
+    /// Get the cell_nodes spatial index table which maps S2 Cell IDs to OSM Node IDs.
+    pub fn cell_nodes(&self) -> Result<SpatialIndexTable, Box<dyn Error>> {
+        Ok(SpatialIndexTable::new(&self.txn, self.db.cell_node))
+    }
 
-        let result = match cursor.iter_dup_of(&id.to_le_bytes()) {
-            Ok(iter) => Some(iter),
+    /// Get the join table which maps OSM Nodes to the Ways that the Node is part of.
+    pub fn node_ways(&self) -> Result<JoinTable, Box<dyn Error>> {
+        Ok(JoinTable::new(&self.txn, self.db.node_way))
+    }
+
+    /// Get the join table which maps OSM Nodes to the Relations that the Node is a member of.
+    pub fn node_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
+        Ok(JoinTable::new(&self.txn, self.db.node_relation))
+    }
+
+    /// Get the join table which maps OSM Ways to the Relations that the Way is a member of.
+    pub fn way_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
+        Ok(JoinTable::new(&self.txn, self.db.way_relation))
+    }
+
+    /// Get the join table which maps OSM Relations to other Relations that they are members of.
+    pub fn relation_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
+        Ok(JoinTable::new(&self.txn, self.db.relation_relation))
+    }
+}
+
+/// A table that stores data associated with OSM elements, keyed by the element's ID.
+/// The value type depends on what element is being stored. In an OSMX database, the
+/// values are usually Cap'n Proto messages describing the element's properties.
+pub struct ElementTable<'txn, E: TryFrom<&'txn [u8]> + 'txn> {
+    txn: &'txn lmdb::RoTransaction<'txn>,
+    table: lmdb::Database,
+    phantom: PhantomData<E>,
+}
+
+impl<'txn, E: TryFrom<&'txn [u8]>> ElementTable<'txn, E> {
+    fn new(txn: &'txn lmdb::RoTransaction<'txn>, table: lmdb::Database) -> Self {
+        Self {
+            txn,
+            table,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Get an element by its ID. Returns None if the element is not found.
+    pub fn get(&self, id: u64) -> Option<E> {
+        match self.txn.get(self.table, &id.to_le_bytes()) {
+            Ok(raw_val) => Some(E::try_from(raw_val).ok().unwrap()),
             Err(lmdb::Error::NotFound) => None,
-            Err(e) => return Err(Box::new(e)),
-        };
+            Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
+        }
+    }
 
-        Ok(Gen::new(|co| async move {
-            let _cursor = cursor; // must move cursor into closure or SIGSEGV
-            if let Some(iter) = result {
-                for (_, raw_val) in iter {
-                    let val =
-                        u64::from_le_bytes(raw_val.try_into().expect("val with incorrect length"));
-                    co.yield_(val).await;
-                }
+    /// Iterate over all the elements in the table.
+    pub fn iter(&self) -> impl Iterator<Item = (u64, E)> + 'txn {
+        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
+        Gen::new(|co| async move {
+            let mut cursor = cursor;
+            for (raw_key, raw_val) in cursor.iter_start() {
+                let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
+                let elem = E::try_from(raw_val).ok().unwrap();
+
+                co.yield_((id, elem)).await;
             }
         })
-        .into_iter())
+        .into_iter()
+    }
+}
+
+/// A table which maps OSM Node IDs to structs containing the Node's lon/lat coordinates.
+pub type Locations<'txn> = ElementTable<'txn, Location<'txn>>;
+
+/// A table which maps OSM Node IDs to structs containing the Node's tags and metadata.
+/// Untagged nodes are omitted from this table (they only exist in the Locations table).
+pub type Nodes<'txn> = ElementTable<'txn, Node<'txn>>;
+
+/// A table which maps OSM Way IDs to structs containing the Way's tags, metadata,
+/// and the IDs of the Nodes that make up the Way.
+pub type Ways<'txn> = ElementTable<'txn, Way<'txn>>;
+
+/// A table which maps OSM Relation IDs to structs containing the Relations's tags,
+/// metadata, and the IDs, types, and roles of the Relation's members.
+pub type Relations<'txn> = ElementTable<'txn, Relation<'txn>>;
+
+/// A spatial index that permits fast spatial lookups of elements. Under the hood,
+/// this is implemented as a table that maps S2 Cell IDs to OSM element IDs.
+pub struct SpatialIndexTable<'txn> {
+    txn: &'txn lmdb::RoTransaction<'txn>,
+    table: lmdb::Database,
+}
+
+impl<'txn> SpatialIndexTable<'txn> {
+    fn new(txn: &'txn lmdb::RoTransaction<'txn>, table: lmdb::Database) -> Self {
+        Self { txn, table }
     }
 
-    pub fn get_node_ids_in_region(
-        &'db self,
-        region: &'db Region,
-    ) -> Result<impl Iterator<Item = u64> + 'db, Box<dyn Error>> {
-        let mut cursor = self.txn.open_ro_cursor(self.db.cell_node)?;
+    /// Given a Region, returns an iterator of IDs of elements that may fall within
+    /// the region. There may be false positives (elements that are near, but not
+    /// not truly within the given region) due to how the spatial index works.
+    pub fn find_in_region(&self, region: &'txn Region) -> impl Iterator<Item = u64> + 'txn {
+        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
 
-        Ok(Gen::new(|co| async move {
+        Gen::new(|co| async move {
+            let mut cursor = cursor;
             for cell_id in region.cells.0.clone() {
                 let start = cell_id.child_begin_at_level(CELL_INDEX_LEVEL);
                 let end = cell_id.child_end_at_level(CELL_INDEX_LEVEL);
 
-                for (_raw_key, raw_val) in cursor
+                for (_, node_id) in cursor
                     .iter_dup_from(&start.0.to_le_bytes())
                     .flatten()
-                    .take_while(|&(raw_key, _raw_val)| {
-                        end.0
-                            > u64::from_le_bytes(
-                                raw_key.try_into().expect("key with incorrect length"),
-                            )
+                    .map(|(raw_key, raw_val)| {
+                        let cell_id = u64::from_le_bytes(
+                            raw_key.try_into().expect("key with incorrect length"),
+                        );
+                        let node_id = u64::from_le_bytes(
+                            raw_val.try_into().expect("val with incorrect length"),
+                        );
+                        (cell_id, node_id)
                     })
+                    .take_while(|&(key, _)| end.0 > key)
                 {
-                    let node_id =
-                        u64::from_le_bytes(raw_val.try_into().expect("val with incorrect length"));
                     co.yield_(node_id).await;
                 }
             }
         })
-        .into_iter())
-    }
-}
-
-// TODO: Nodes, Ways and Relations have similar implementations; can they all be parameterized
-// from the same type? e.g. type Nodes = Reader<Node> etc
-
-pub struct Nodes<'txn> {
-    txn: &'txn lmdb::RoTransaction<'txn>,
-    table: lmdb::Database,
-}
-
-impl<'txn> Nodes<'txn> {
-    pub fn get(&self, id: u64) -> Option<Node<'txn>> {
-        match self.txn.get(self.table, &id.to_le_bytes()) {
-            Ok(raw_val) => Some(Node::from_bytes(raw_val)),
-            Err(lmdb::Error::NotFound) => None,
-            Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Node<'txn>)> {
-        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
-        Gen::new(|co| async move {
-            let mut cursor = cursor;
-            for (raw_key, raw_val) in cursor.iter_start() {
-                let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
-                let node = Node::from_bytes(raw_val);
-
-                co.yield_((id, node)).await;
-            }
-        })
         .into_iter()
     }
 }
 
-pub struct Ways<'txn> {
+/// A table that maps IDs of elements to IDs of other elements to which they are related.
+/// For example, mapping Nodes to the Ways that they are part of, or mapping any elements
+/// (Nodes, Ways, Relations) to the Relations that the elements are members of.
+pub struct JoinTable<'txn> {
     txn: &'txn lmdb::RoTransaction<'txn>,
     table: lmdb::Database,
 }
 
-impl<'txn> Ways<'txn> {
-    pub fn get(&self, id: u64) -> Option<Way<'txn>> {
-        match self.txn.get(self.table, &id.to_le_bytes()) {
-            Ok(raw_val) => Some(Way::from_bytes(raw_val)),
-            Err(lmdb::Error::NotFound) => None,
-            Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
-        }
+impl<'txn> JoinTable<'txn> {
+    fn new(txn: &'txn lmdb::RoTransaction<'txn>, table: lmdb::Database) -> Self {
+        Self { txn, table }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Way<'txn>)> {
+    /// Given an element ID, returns the IDs of elements it is related to in this table.
+    /// Returns an iterator since there may be multiple values for a given key.
+    pub fn get(&self, id: u64) -> impl Iterator<Item = u64> + 'txn {
         let cursor = self.txn.open_ro_cursor(self.table).unwrap();
+
         Gen::new(|co| async move {
             let mut cursor = cursor;
-            for (raw_key, raw_val) in cursor.iter_start() {
-                let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
-                let way = Way::from_bytes(raw_val);
+            match cursor.iter_dup_of(&id.to_le_bytes()) {
+                Ok(iter) => {
+                    for (_, raw_val) in iter {
+                        let val = u64::from_le_bytes(
+                            raw_val.try_into().expect("key with incorrect length"),
+                        );
 
-                co.yield_((id, way)).await;
-            }
-        })
-        .into_iter()
-    }
-}
-
-pub struct Relations<'txn> {
-    txn: &'txn lmdb::RoTransaction<'txn>,
-    table: lmdb::Database,
-}
-
-impl<'txn> Relations<'txn> {
-    pub fn get(&self, id: u64) -> Option<Relation<'txn>> {
-        match self.txn.get(self.table, &id.to_le_bytes()) {
-            Ok(raw_val) => Some(Relation::from_bytes(raw_val)),
-            Err(lmdb::Error::NotFound) => None,
-            Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Relation<'txn>)> {
-        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
-        Gen::new(|co| async move {
-            let mut cursor = cursor;
-            for (raw_key, raw_val) in cursor.iter_start() {
-                let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
-                let relation = Relation::from_bytes(raw_val);
-
-                co.yield_((id, relation)).await;
-            }
-        })
-        .into_iter()
-    }
-}
-
-pub struct Locations<'txn> {
-    txn: &'txn lmdb::RoTransaction<'txn>,
-    table: lmdb::Database,
-}
-
-impl<'txn> Locations<'txn> {
-    pub fn get(&self, id: u64) -> Option<Location<'txn>> {
-        match self.txn.get(self.table, &id.to_le_bytes()) {
-            Ok(raw_val) => Some(Location::from_bytes(raw_val)),
-            Err(lmdb::Error::NotFound) => None,
-            Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
-        }
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (u64, Location<'txn>)> {
-        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
-        Gen::new(|co| async move {
-            let mut cursor = cursor;
-            for (raw_key, raw_val) in cursor.iter_start() {
-                let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
-                let way = Location::from_bytes(raw_val);
-
-                co.yield_((id, way)).await;
+                        co.yield_(val).await;
+                    }
+                }
+                Err(lmdb::Error::NotFound) => (),
+                Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
             }
         })
         .into_iter()

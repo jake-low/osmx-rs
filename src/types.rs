@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use crate::messages_capnp;
 use capnp::message::{ReaderOptions, TypedReader};
 use capnp::serialize::BufferSegments;
@@ -18,10 +20,6 @@ pub struct Location<'a> {
 const COORDINATE_PRECISION: i32 = 10000000;
 
 impl<'a> Location<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Self {
-        Self { buf: bytes }
-    }
-
     pub fn lon(&self) -> f64 {
         let as_i32 = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
         as_i32 as f64 / COORDINATE_PRECISION as f64
@@ -33,25 +31,26 @@ impl<'a> Location<'a> {
     }
 }
 
+impl<'a> TryFrom<&'a [u8]> for Location<'a> {
+    type Error = ();
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        Ok(Self { buf: bytes })
+    }
+}
+
 /// A reader for a value in the `nodes` table, which stores the tags and metadata for OSM Nodes.
 pub struct Node<'a> {
     reader: TypedReader<BufferSegments<&'a [u8]>, messages_capnp::node::Owned>,
 }
 
 impl<'a> Node<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Self {
-        let options = ReaderOptions::new();
-        let segments = BufferSegments::new(bytes, options).unwrap();
-
-        Self {
-            reader: capnp::message::Reader::new(segments, options).into_typed(),
-        }
-    }
-
+    /// Get the value of a single tag key. Returns None if the element does not have the given tag.
     pub fn tag(&'a self, key: &str) -> Option<&'a str> {
         self.tags().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
+    /// Returns an iterator of key-value pairs for all of the tags on this element.
     pub fn tags(&'a self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.reader
             .get()
@@ -61,6 +60,19 @@ impl<'a> Node<'a> {
             .iter()
             .map(|v| v.unwrap().to_str().unwrap())
             .tuples::<(&'a str, &'a str)>()
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for Node<'a> {
+    type Error = Box<dyn Error>;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        let options = ReaderOptions::new();
+        let segments = BufferSegments::new(bytes, options)?;
+
+        Ok(Self {
+            reader: capnp::message::Reader::new(segments, options).into_typed(),
+        })
     }
 }
 
@@ -70,15 +82,12 @@ pub struct Way<'a> {
 }
 
 impl<'a> Way<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Self {
-        let options = ReaderOptions::new();
-        let segments = BufferSegments::new(bytes, options).unwrap();
-
-        Self {
-            reader: capnp::message::Reader::new(segments, options).into_typed(),
-        }
+    /// Get the value of a single tag key. Returns None if the element does not have the given tag.
+    pub fn tag(&'a self, key: &str) -> Option<&'a str> {
+        self.tags().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
+    /// Returns an iterator of key-value pairs for all of the tags on this element.
     pub fn tags(&'a self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.reader
             .get()
@@ -90,10 +99,12 @@ impl<'a> Way<'a> {
             .tuples::<(&'a str, &'a str)>()
     }
 
+    /// Returns the IDs of the Nodes that make up this Way
     pub fn nodes(&'a self) -> impl Iterator<Item = u64> + 'a {
         self.reader.get().unwrap().get_nodes().unwrap().iter()
     }
 
+    /// Returns if the way is a closed ring (i.e. its first and last node have the same ID)
     pub fn is_closed(&self) -> bool {
         // TODO: haven't considered if this is correct when way contains zero or one nodes
         let mut nodes = self.nodes();
@@ -103,25 +114,31 @@ impl<'a> Way<'a> {
     }
 }
 
+impl<'a> TryFrom<&'a [u8]> for Way<'a> {
+    type Error = Box<dyn Error>;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        let options = ReaderOptions::new();
+        let segments = BufferSegments::new(bytes, options)?;
+
+        Ok(Self {
+            reader: capnp::message::Reader::new(segments, options).into_typed(),
+        })
+    }
+}
+
 /// A reader for an OSM Relation in the `relations` table, including its tags, metadata, and list of members.
 pub struct Relation<'a> {
     reader: TypedReader<BufferSegments<&'a [u8]>, messages_capnp::relation::Owned>,
 }
 
 impl<'a> Relation<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Self {
-        let options = ReaderOptions::new();
-        let segments = BufferSegments::new(bytes, options).unwrap();
-
-        Self {
-            reader: capnp::message::Reader::new(segments, options).into_typed(),
-        }
-    }
-
+    /// Get the value of a single tag key. Returns None if the element does not have the given tag.
     pub fn tag(&'a self, key: &str) -> Option<&'a str> {
         self.tags().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
 
+    /// Returns an iterator of key-value pairs for all of the tags on this element.
     pub fn tags(&'a self) -> impl Iterator<Item = (&'a str, &'a str)> {
         self.reader
             .get()
@@ -133,6 +150,7 @@ impl<'a> Relation<'a> {
             .tuples::<(&'a str, &'a str)>()
     }
 
+    /// Returns the members of this Relation. See [RelationMember].
     pub fn members(&'a self) -> impl Iterator<Item = RelationMember<'a>> {
         self.reader
             .get()
@@ -144,12 +162,26 @@ impl<'a> Relation<'a> {
     }
 }
 
+impl<'a> TryFrom<&'a [u8]> for Relation<'a> {
+    type Error = Box<dyn Error>;
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        let options = ReaderOptions::new();
+        let segments = BufferSegments::new(bytes, options)?;
+
+        Ok(Self {
+            reader: capnp::message::Reader::new(segments, options).into_typed(),
+        })
+    }
+}
+
 /// A reader for a member reference of an OSM Relation. Created by calling [Relation::members]
 pub struct RelationMember<'a> {
     reader: messages_capnp::relation_member::Reader<'a>,
 }
 
 impl<'a> RelationMember<'a> {
+    /// The element type and ID of this relation member.
     pub fn id(&'a self) -> ElementId {
         use messages_capnp::relation_member::Type;
         let id_ref = self.reader.get_ref();
@@ -161,6 +193,7 @@ impl<'a> RelationMember<'a> {
         }
     }
 
+    /// The role of this element in the relation.
     pub fn role(&'a self) -> &'a str {
         self.reader.get_role().unwrap().to_str().unwrap()
     }

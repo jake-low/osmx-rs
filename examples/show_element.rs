@@ -28,15 +28,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             let node = nodes.get(element_id); // may be None for untagged nodes
 
             println!("Node {}", element_id);
+            println!("Location: {:.7} {:.7}", location.lon(), location.lat());
 
             if let Some(node) = node {
-                println!("Tags:");
+                println!("Tags ({})", node.tags().count());
                 for (key, val) in node.tags() {
                     println!("  {:?} = {:?}", key, val);
                 }
             }
 
-            println!("Location: {:.7} {:.7}", location.lon(), location.lat());
+            let node_ways = txn.node_ways()?;
+            let node_relations = txn.node_relations()?;
+
+            println!("Part of {} Ways", node_ways.get(element_id).count());
+            for way_id in node_ways.get(element_id) {
+                println!("  {}", way_id);
+            }
+
+            println!(
+                "Member of {} Relations",
+                node_relations.get(element_id).count()
+            );
+            for relation_id in node_relations.get(element_id) {
+                println!("  {}", relation_id);
+            }
         }
         "way" => {
             // get the ways table
@@ -46,14 +61,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             println!("Way {}", element_id);
 
-            println!("Tags:");
+            println!("Tags ({})", way.tags().count());
             for (key, val) in way.tags() {
                 println!("  {:?} = {:?}", key, val);
             }
 
-            println!("Nodes:");
+            println!("Nodes ({})", way.nodes().count());
             for node_id in way.nodes() {
                 println!("  {}", node_id);
+            }
+
+            let way_relations = txn.way_relations()?;
+
+            println!(
+                "Member of {} Relations",
+                way_relations.get(element_id).count()
+            );
+            for relation_id in way_relations.get(element_id) {
+                println!("  {}", relation_id);
             }
         }
         "relation" => {
@@ -64,14 +89,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             println!("Relation {}", element_id);
 
-            println!("Tags:");
+            println!("Tags ({})", relation.tags().count());
             for (key, val) in relation.tags() {
                 println!("  {:?} = {:?}", key, val);
             }
 
-            println!("Members:");
+            println!("Members ({})", relation.members().count());
             for member in relation.members() {
                 println!("  {:?} {}", member.id(), member.role());
+            }
+
+            let relation_relations = txn.relation_relations()?;
+
+            println!(
+                "Member of {} Relations",
+                relation_relations.get(element_id).count()
+            );
+            for relation_id in relation_relations.get(element_id) {
+                println!("  {}", relation_id);
             }
         }
         _ => {

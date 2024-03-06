@@ -14,11 +14,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
     let file_path = std::path::PathBuf::from(&args[1]);
 
+    // open the .osmx database file
     let db = osmx::Database::open(&file_path)?;
+    // begin a read transaction (ensures that all reads see a coherent snapshot
+    // of the data, even if another process is writing at the same time)
     let txn = osmx::Transaction::begin(&db)?;
 
+    // get the ways table (containing way tags, metadata, and node refs)
     let ways = txn.ways()?;
+    // get the locations table (containing coordinates for each node)
     let locations = txn.locations()?;
+    // get the cell_nodes spatial index table (maps S2 Cell IDs to OSM Node IDs)
+    let cell_nodes = txn.cell_nodes()?;
+    // get the node_ways table (which maps Node IDs to Way IDs that contain those nodes)
+    let node_ways = txn.node_ways()?;
 
     let bbox: Vec<f64> = args[2..]
         .iter()
@@ -26,10 +35,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .collect();
     let region = osmx::Region::from_bbox(bbox[0], bbox[1], bbox[2], bbox[3]);
 
-    // eprintln!("Cell covering size: {}", region.cells.0.len());
-
-    // get IDs of all Nodes that match the given region
-    let node_ids: roaring::RoaringTreemap = txn.get_node_ids_in_region(&region)?.collect();
+    // Use the spatial index to get IDs of all Nodes within the given region.
+    // You could also collect() the iterator into a Vec<u64>, but for large
+    // regions a RoaringTreemap is likely to be faster.
+    let node_ids: roaring::RoaringTreemap = cell_nodes.find_in_region(&region).collect();
 
     eprintln!("Nodes in region: {}", node_ids.len());
 
@@ -37,27 +46,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut way_ids = roaring::RoaringTreemap::new();
 
     for node_id in node_ids {
-        way_ids.extend(txn.get_ways_for_node(node_id)?);
+        way_ids.extend(node_ways.get(node_id));
     }
 
     eprintln!("Ways in region: {}", way_ids.len());
 
     // Print names and WKT geometries for each way
-    // let mut cursor = txn.open_ro_cursor(locations)?;
     for way_id in way_ids {
         let way = ways.get(way_id).unwrap();
 
-        for (key, val) in way.tags() {
-            if key == "name" {
-                print!("{}", val);
-            }
+        // if the way has a "name" tag, print it
+        if let Some(name) = way.tag("name") {
+            print!("{}", name);
         }
 
+        // get the way's node refs, and look up each node's location
         let coords = way.nodes().map(|node_id| {
             let loc = locations.get(node_id).unwrap();
             (loc.lon(), loc.lat())
         });
 
+        // print the resulting coords as a WKT linestring
         println!(
             "\tLINESTRING ({})",
             coords
