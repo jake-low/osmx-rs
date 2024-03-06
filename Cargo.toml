@@ -2,6 +2,10 @@
 name = "osmx"
 description = "Rust port of OSMExpress - a fast database file format for OpenStreetMap"
 version = "0.1.0"
+authors = ["Jake Low <hello@jakelow.com>"]
+homepage = "https://github.com/jake-low/osmx-rs"
+repository = "https://github.com/jake-low/osmx-rs"
+license = "MIT OR Apache-2.0"
 edition = "2021"
 
 [dependencies]
@@ -15,3 +19,4 @@ s2 = "0.0.12"
 
 [build-dependencies]
 capnpc = "0.19.0"
+
