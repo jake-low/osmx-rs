@@ -7,7 +7,7 @@ use lmdb::{Cursor, Transaction as LmdbTransaction};
 
 use crate::types::{Location, Node, Region, Relation, Way};
 
-const CELL_INDEX_LEVEL: u64 = 16;
+pub const CELL_INDEX_LEVEL: u64 = 16;
 
 /// A handle to an OSMX database file
 pub struct Database {

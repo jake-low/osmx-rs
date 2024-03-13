@@ -1,0 +1,18 @@
+[package]
+name = "osmx-rs"
+description = "Command-line tool for manipulating .osmx files"
+version = "0.1.0"
+edition = "2021" 
+
+[dependencies]
+bincode = "1.3.3"
+capnp = "0.19.2"
+clap = { version = "4.5.2", features = ["derive", "cargo"] }
+genawaiter = "0.99.1"
+indicatif = "0.17.8"
+lmdb = "0.8.0"
+lmdb-sys = "0.8.0"
+osmpbf = "0.3.3"
+osmx = { path = ".." }
+s2 = "0.0.12"
+serde = { version = "1.0.197", features = ["derive"] }
