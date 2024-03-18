@@ -1,9 +1,10 @@
 use std::error::Error;
 use std::marker::PhantomData;
 use std::path::Path;
+use std::sync::Arc;
 
 use genawaiter::rc::Gen;
-use lmdb::{Cursor, Transaction as LmdbTransaction};
+use lmdb_zero as lmdb;
 
 use crate::types::{Location, Node, Region, Relation, Way};
 
@@ -11,44 +12,48 @@ pub const CELL_INDEX_LEVEL: u64 = 16;
 
 /// A handle to an OSMX database file
 pub struct Database {
-    env: lmdb::Environment,
+    env: Arc<lmdb::Environment>,
 
     // tables that store OSM object data (keyed by ID)
-    locations: lmdb::Database,
-    nodes: lmdb::Database,
-    ways: lmdb::Database,
-    relations: lmdb::Database,
+    locations: lmdb::Database<'static>,
+    nodes: lmdb::Database<'static>,
+    ways: lmdb::Database<'static>,
+    relations: lmdb::Database<'static>,
     // spatial index table for nodes/locations (keyed by S2 cell ID)
-    cell_node: lmdb::Database,
+    cell_node: lmdb::Database<'static>,
     // tables that map OSM object IDs to parent IDs
-    node_way: lmdb::Database,
-    node_relation: lmdb::Database,
-    way_relation: lmdb::Database,
-    relation_relation: lmdb::Database,
+    node_way: lmdb::Database<'static>,
+    node_relation: lmdb::Database<'static>,
+    way_relation: lmdb::Database<'static>,
+    relation_relation: lmdb::Database<'static>,
 }
 
 impl Database {
     /// Open the given file path as an OSMX Database
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Box<dyn Error>> {
-        let env = lmdb::Environment::new()
-            .set_flags(
-                lmdb::EnvironmentFlags::NO_SUB_DIR
-                    | lmdb::EnvironmentFlags::NO_READAHEAD
-                    | lmdb::EnvironmentFlags::NO_SYNC,
-            )
-            .set_max_dbs(10)
-            .set_map_size(50 * 1024 * 1024 * 1024) // 50 GiB
-            .open(path.as_ref())?;
+        let mut builder = lmdb::EnvBuilder::new()?;
+        builder.set_maxdbs(10)?;
+        builder.set_mapsize(50 * 1024 * 1024 * 1024)?; // 50 GiB
+        let env = unsafe {
+            builder.open(
+                path.as_ref().to_str().unwrap(),
+                lmdb::open::NOSUBDIR | lmdb::open::NORDAHEAD | lmdb::open::NOSYNC,
+                0o600,
+            )?
+        };
 
-        let locations = env.open_db(Some("locations"))?;
-        let nodes = env.open_db(Some("nodes"))?;
-        let ways = env.open_db(Some("ways"))?;
-        let relations = env.open_db(Some("relations"))?;
-        let cell_node = env.open_db(Some("cell_node"))?;
-        let node_way = env.open_db(Some("node_way"))?;
-        let node_relation = env.open_db(Some("node_relation"))?;
-        let way_relation = env.open_db(Some("way_relation"))?;
-        let relation_relation = env.open_db(Some("relation_relation"))?;
+        let env = Arc::new(env);
+        let options = lmdb::DatabaseOptions::defaults();
+
+        let locations = lmdb::Database::open(env, Some("locations"), &options)?;
+        let nodes = lmdb::Database::open(env, Some("nodes"), &options)?;
+        let ways = lmdb::Database::open(env, Some("ways"), &options)?;
+        let relations = lmdb::Database::open(env, Some("relations"), &options)?;
+        let cell_node = lmdb::Database::open(env, Some("cell_node"), &options)?;
+        let node_way = lmdb::Database::open(env, Some("node_way"), &options)?;
+        let node_relation = lmdb::Database::open(env, Some("node_relation"), &options)?;
+        let way_relation = lmdb::Database::open(env, Some("way_relation"), &options)?;
+        let relation_relation = lmdb::Database::open(env, Some("relation_relation"), &options)?;
 
         Ok(Self {
             env,
@@ -70,73 +75,75 @@ impl Database {
 /// it is being modified simultaneously by another process.
 pub struct Transaction<'db> {
     db: &'db Database,
-    txn: lmdb::RoTransaction<'db>, // TODO support write txns?
+    txn: lmdb::ReadTransaction<'static>, // TODO support write txns?
 }
 
 impl<'db> Transaction<'db> {
     /// Create a new Transaction from the given Database.
     pub fn begin(db: &'db Database) -> Result<Self, Box<dyn Error>> {
-        let txn = db.env.begin_ro_txn()?;
+        let txn = lmdb::ReadTransaction::new(db.env)?;
         Ok(Self { db, txn })
     }
 
     /// Get the Locations table, which maps OSM Node IDs to locations.
     pub fn locations(&self) -> Result<Locations, Box<dyn Error>> {
-        Ok(Locations::new(&self.txn, self.db.locations))
+        Ok(Locations::new(&self.txn, &self.db.locations))
     }
 
     /// Get the Nodes table, which maps OSM Node IDs to their metadata and tags.
     pub fn nodes(&self) -> Result<Nodes, Box<dyn Error>> {
-        Ok(Nodes::new(&self.txn, self.db.nodes))
+        Ok(Nodes::new(&self.txn, &self.db.nodes))
     }
 
     /// Get the Ways table, which maps OSM Way IDs to their metadata, tags, and node refs.
     pub fn ways(&self) -> Result<Ways, Box<dyn Error>> {
-        Ok(Ways::new(&self.txn, self.db.ways))
+        Ok(Ways::new(&self.txn, &self.db.ways))
     }
 
     /// Get the Relations table, which maps OSM Relation IDs to their metadata, tags, and member refs.
     pub fn relations(&self) -> Result<Relations, Box<dyn Error>> {
-        Ok(Relations::new(&self.txn, self.db.relations))
+        Ok(Relations::new(&self.txn, &self.db.relations))
     }
 
+    /*
     /// Get the cell_nodes spatial index table which maps S2 Cell IDs to OSM Node IDs.
     pub fn cell_nodes(&self) -> Result<SpatialIndexTable, Box<dyn Error>> {
-        Ok(SpatialIndexTable::new(&self.txn, self.db.cell_node))
+        Ok(SpatialIndexTable::new(&self.txn, &self.db.cell_node))
     }
 
     /// Get the join table which maps OSM Nodes to the Ways that the Node is part of.
     pub fn node_ways(&self) -> Result<JoinTable, Box<dyn Error>> {
-        Ok(JoinTable::new(&self.txn, self.db.node_way))
+        Ok(JoinTable::new(&self.txn, &self.db.node_way))
     }
 
     /// Get the join table which maps OSM Nodes to the Relations that the Node is a member of.
     pub fn node_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
-        Ok(JoinTable::new(&self.txn, self.db.node_relation))
+        Ok(JoinTable::new(&self.txn, &self.db.node_relation))
     }
 
     /// Get the join table which maps OSM Ways to the Relations that the Way is a member of.
     pub fn way_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
-        Ok(JoinTable::new(&self.txn, self.db.way_relation))
+        Ok(JoinTable::new(&self.txn, &self.db.way_relation))
     }
 
     /// Get the join table which maps OSM Relations to other Relations that they are members of.
     pub fn relation_relations(&self) -> Result<JoinTable, Box<dyn Error>> {
-        Ok(JoinTable::new(&self.txn, self.db.relation_relation))
+        Ok(JoinTable::new(&self.txn, &self.db.relation_relation))
     }
+    */
 }
 
 /// A table that stores data associated with OSM elements, keyed by the element's ID.
 /// The value type depends on what element is being stored. In an OSMX database, the
 /// values are usually Cap'n Proto messages describing the element's properties.
 pub struct ElementTable<'txn, E: TryFrom<&'txn [u8]> + 'txn> {
-    txn: &'txn lmdb::RoTransaction<'txn>,
-    table: lmdb::Database,
+    txn: &'txn lmdb::ReadTransaction<'txn>,
+    table: &'txn lmdb::Database<'txn>,
     phantom: PhantomData<E>,
 }
 
 impl<'txn, E: TryFrom<&'txn [u8]>> ElementTable<'txn, E> {
-    fn new(txn: &'txn lmdb::RoTransaction<'txn>, table: lmdb::Database) -> Self {
+    fn new(txn: &'txn lmdb::ReadTransaction<'txn>, table: &'txn lmdb::Database) -> Self {
         Self {
             txn,
             table,
@@ -146,21 +153,24 @@ impl<'txn, E: TryFrom<&'txn [u8]>> ElementTable<'txn, E> {
 
     /// Get an element by its ID. Returns None if the element is not found.
     pub fn get(&self, id: u64) -> Option<E> {
-        match self.txn.get(self.table, &id.to_le_bytes()) {
+        let access = self.txn.access();
+        match access.get(self.table, &id.to_le_bytes()) {
             Ok(raw_val) => Some(E::try_from(raw_val).ok().unwrap()),
-            Err(lmdb::Error::NotFound) => None,
+            // Err(lmdb::Error::NotFound) => None,
             Err(e) => unreachable!("Unexpected LMDB error: {:?}", e),
         }
     }
 
     /// Iterate over all the elements in the table.
-    pub fn iter(&self) -> impl Iterator<Item = (u64, E)> + 'txn {
-        let cursor = self.txn.open_ro_cursor(self.table).unwrap();
+    pub fn iter<'s>(&'s self) -> impl Iterator<Item = (u64, E)> + 'txn {
+        let access = self.txn.access();
+        let cursor = self.txn.cursor(self.table).unwrap();
         Gen::new(|co| async move {
+            let access = access;
             let mut cursor = cursor;
-            for (raw_key, raw_val) in cursor.iter_start() {
+            while let Ok((raw_key, raw_val)) = cursor.next::<[u8], [u8]>(&access) {
                 let id = u64::from_le_bytes(raw_key.try_into().expect("key with incorrect length"));
-                let elem = E::try_from(raw_val).ok().unwrap();
+                let elem = E::try_from(raw_val.clone()).ok().unwrap();
 
                 co.yield_((id, elem)).await;
             }
@@ -184,6 +194,7 @@ pub type Ways<'txn> = ElementTable<'txn, Way<'txn>>;
 /// metadata, and the IDs, types, and roles of the Relation's members.
 pub type Relations<'txn> = ElementTable<'txn, Relation<'txn>>;
 
+/*
 /// A spatial index that permits fast spatial lookups of elements. Under the hood,
 /// this is implemented as a table that maps S2 Cell IDs to OSM element IDs.
 pub struct SpatialIndexTable<'txn> {
@@ -267,3 +278,4 @@ impl<'txn> JoinTable<'txn> {
         .into_iter()
     }
 }
+*/
