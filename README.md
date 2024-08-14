@@ -29,6 +29,18 @@ osmx-rs is not designed for reading untrusted input files. Using this crate to r
 
 Also worth noting that osmx-rs depends on the [lmdb](https://crates.io/crates/lmdb) crate, which wraps the [LMDB](https://www.symas.com/lmdb) C API and therefore requires the use of `unsafe`.
 
+## CLI command
+
+This repository also contains a CLI tool for interacting with `.osmx` files.
+
+Usage: `osmx-rs [COMMAND] [ARGS...]`
+
+Commands:
+- `expand`: convert an OSM PBF file to an OSMX database
+- `stat`: print statistics about the contents of an OSMX database
+
+The command is intended to be useful tool, but also to be an illustrative example of how to use the `osmx-rs` crate to create and interact with `.osmx` files. The source code can be found in the `bin/` directory.
+
 ## License
 
 This code can be used under the terms of either the [MIT license](./LICENSE-MIT) or [Apache-2.0 license](./LICENSE-APACHE), at your option.
