@@ -12,7 +12,7 @@ genawaiter = "0.99.1"
 indicatif = "0.17.8"
 lmdb = "0.8.0"
 lmdb-sys = "0.8.0"
-osmpbf = "0.3.3"
+osmpbf = "0.3.4"
 osmx = { path = ".." }
 s2 = "0.0.12"
 serde = { version = "1.0.197", features = ["derive"] }

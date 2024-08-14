@@ -99,7 +99,6 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
 
     // write metadata table
 
-    /* TODO: waiting on https://github.com/b-r-u/osmpbf/pull/43
     let header = osmpbf::BlobReader::new(BufReader::new(File::open(&args.input_file)?))
         .map(|r| r.unwrap())
         .filter(|blob| match blob.get_type() {
@@ -127,7 +126,6 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
             lmdb::WriteFlags::empty(),
         )?;
     }
-    */
 
     txn.put(
         metadata,
