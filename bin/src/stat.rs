@@ -35,7 +35,7 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
         .open(args.input_file.as_ref())?;
 
     println!(
-        "{:<18} {:>10} {:>12} {:>12} {:>9} {:>9} {:>9}",
+        "{:<18} {:>12} {:>12} {:>12} {:>9} {:>9} {:>9}",
         "NAME", "ENTRIES", "SIZE (KiB)", "TOTAL PAGES", "BRANCH", "LEAF", "OVERFLOW"
     );
     for name in TABLE_NAMES {
@@ -59,7 +59,7 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
         let size = stat.ms_psize * total_pages as u32;
 
         println!(
-            "{:<18} {:>10} {:>12} {:>12} {:>9} {:>9} {:>9}",
+            "{:<18} {:>12} {:>12} {:>12} {:>9} {:>9} {:>9}",
             name,
             stat.ms_entries,
             size / 1024,
