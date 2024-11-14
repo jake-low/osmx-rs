@@ -19,6 +19,8 @@ pub struct Location<'a> {
 
 const COORDINATE_PRECISION: i32 = 10000000;
 
+/// A reader for a value in the `locations` table, which stores the coordinates and version number
+/// of untagged nodes. (OSMX does not store other metadata about untagged nodes)
 impl<'a> Location<'a> {
     pub fn lon(&self) -> f64 {
         let as_i32 = i32::from_le_bytes(self.buf[0..4].try_into().unwrap());
@@ -28,6 +30,10 @@ impl<'a> Location<'a> {
     pub fn lat(&self) -> f64 {
         let as_i32 = i32::from_le_bytes(self.buf[4..8].try_into().unwrap());
         as_i32 as f64 / COORDINATE_PRECISION as f64
+    }
+
+    pub fn version(&self) -> u32 {
+        u32::from_le_bytes(self.buf[8..12].try_into().unwrap())
     }
 }
 
@@ -46,6 +52,8 @@ pub struct Node<'a> {
 
 impl<'a> Node<'a> {
     /// Get the value of a single tag key. Returns None if the element does not have the given tag.
+    ///
+    /// This function has time complexity O(n).
     pub fn tag(&'a self, key: &str) -> Option<&'a str> {
         self.tags().find(|(k, _)| k == &key).map(|(_, v)| v)
     }
@@ -60,6 +68,14 @@ impl<'a> Node<'a> {
             .iter()
             .map(|v| v.unwrap().to_str().unwrap())
             .tuples::<(&'a str, &'a str)>()
+    }
+
+    /// Returns [Metadata] about this Node (its current version and the changeset
+    /// that last modified it)
+    pub fn metadata(&'a self) -> Metadata<'a> {
+        Metadata {
+            reader: self.reader.get().unwrap().get_metadata().unwrap(),
+        }
     }
 }
 
@@ -112,6 +128,14 @@ impl<'a> Way<'a> {
         let last = nodes.last();
         first == last
     }
+
+    /// Returns [Metadata] about this Way (its current version and the changeset
+    /// that last modified it)
+    pub fn metadata(&'a self) -> Metadata<'a> {
+        Metadata {
+            reader: self.reader.get().unwrap().get_metadata().unwrap(),
+        }
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Way<'a> {
@@ -160,6 +184,14 @@ impl<'a> Relation<'a> {
             .iter()
             .map(|v| RelationMember { reader: v })
     }
+
+    /// Returns [Metadata] about this Relation (its current version and the
+    /// changeset that last modified it)
+    pub fn metadata(&'a self) -> Metadata<'a> {
+        Metadata {
+            reader: self.reader.get().unwrap().get_metadata().unwrap(),
+        }
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Relation<'a> {
@@ -196,6 +228,32 @@ impl<'a> RelationMember<'a> {
     /// The role of this element in the relation.
     pub fn role(&'a self) -> &'a str {
         self.reader.get_role().unwrap().to_str().unwrap()
+    }
+}
+
+pub struct Metadata<'a> {
+    reader: messages_capnp::metadata::Reader<'a>,
+}
+
+impl<'a> Metadata<'a> {
+    pub fn version(&'a self) -> u32 {
+        self.reader.get_version()
+    }
+
+    pub fn changeset(&'a self) -> u32 {
+        self.reader.get_changeset()
+    }
+
+    pub fn timestamp(&'a self) -> u64 {
+        self.reader.get_timestamp()
+    }
+
+    pub fn uid(&'a self) -> u32 {
+        self.reader.get_uid()
+    }
+
+    pub fn user(&'a self) -> &'a str {
+        self.reader.get_user().unwrap().to_str().unwrap()
     }
 }
 

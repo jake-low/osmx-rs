@@ -10,4 +10,4 @@ pub mod messages_capnp {
 }
 
 pub use database::{Database, Locations, Nodes, Relations, Transaction, Ways, CELL_INDEX_LEVEL};
-pub use types::{Location, Node, Region, Relation, RelationMember, Way};
+pub use types::{Location, Metadata, Node, Region, Relation, RelationMember, Way};
