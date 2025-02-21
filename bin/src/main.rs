@@ -2,6 +2,7 @@ use std::error::Error;
 
 use clap::{Parser, Subcommand};
 
+mod adiff;
 mod builders;
 mod expand;
 mod sorter;
@@ -18,6 +19,7 @@ struct CliArgs {
 enum Command {
     Expand(expand::CliArgs),
     Stat(stat::CliArgs),
+    AugmentedDiff(adiff::CliArgs),
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -25,6 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match args.subcommand {
         Command::Stat(args) => stat::run(&args)?,
         Command::Expand(args) => expand::run(&args)?,
+        Command::AugmentedDiff(args) => adiff::run(&args)?,
     };
 
     Ok(())
