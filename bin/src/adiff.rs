@@ -1,12 +1,13 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 
+use anyhow::anyhow;
+use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use libxml::parser::Parser;
 use libxml::tree::SaveOptions;
-use libxml::tree::{Document, Node};
-use osmx::messages_capnp::relation;
+use libxml::tree::{Document, Node as XmlNode};
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 enum ElementId {
@@ -15,6 +16,8 @@ enum ElementId {
     Relation(u64),
 }
 
+type ChangesetId = u64;
+
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 enum ActionType {
     Create,
@@ -22,12 +25,477 @@ enum ActionType {
     Delete,
 }
 
-impl ActionType {
-    fn to_str(&self) -> &str {
+#[derive(Clone, Debug)]
+struct Node {
+    id: u64,
+    version: u32,
+    visible: bool,
+    metadata: Option<Metadata>,
+    lon: f64,
+    lat: f64,
+    tags: Tags,
+}
+
+#[derive(Clone, Debug)]
+struct Way {
+    id: u64,
+    version: u32,
+    visible: bool,
+    metadata: Option<Metadata>,
+    nodes: Vec<u64>,
+    tags: Tags,
+}
+
+#[derive(Clone, Debug)]
+struct Relation {
+    id: u64,
+    version: u32,
+    visible: bool,
+    metadata: Option<Metadata>,
+    members: Vec<Member>,
+    tags: Tags,
+}
+
+#[derive(Clone, Debug)]
+struct Member {
+    id: ElementId,
+    role: String,
+}
+
+#[derive(Clone, Debug)]
+struct Metadata {
+    changeset: u64,
+    timestamp: DateTime<Utc>,
+    uid: u32,
+    user: String,
+}
+
+type Tags = BTreeMap<String, String>;
+
+#[derive(Clone, Debug)]
+enum Element {
+    Node(Node),
+    Way(Way),
+    Relation(Relation),
+}
+
+#[derive(Clone, Debug)]
+struct AugmentedWay {
+    id: u64,
+    version: u32,
+    visible: bool,
+    metadata: Option<Metadata>,
+    nodes: Vec<WayNode>,
+    tags: Tags,
+}
+
+#[derive(Clone, Debug)]
+struct AugmentedRelation {
+    id: u64,
+    version: u32,
+    visible: bool,
+    metadata: Option<Metadata>,
+    members: Vec<AugmentedMember>,
+    tags: Tags,
+}
+
+#[derive(Clone, Debug)]
+enum WayNode {
+    Resolved(Node),
+    /// A way node reference that could not be found in the database;
+    /// uncommon but can happen if the database is referentially incomplete.
+    Dangling {
+        id: u64,
+    },
+}
+
+#[derive(Clone, Debug)]
+enum AugmentedMember {
+    Resolved {
+        id: ElementId,
+        role: String,
+        element: Box<AugmentedElement>,
+    },
+    /// A relation member whose corresponding element could not be found
+    /// in the database.
+    Dangling { id: ElementId, role: String },
+}
+
+impl AugmentedMember {
+    fn id(&self) -> ElementId {
         match self {
-            ActionType::Create => "create",
-            ActionType::Modify => "modify",
-            ActionType::Delete => "delete",
+            AugmentedMember::Resolved { id, .. } => *id,
+            AugmentedMember::Dangling { id, .. } => *id,
+        }
+    }
+
+    fn role(&self) -> &str {
+        match self {
+            AugmentedMember::Resolved { role, .. } => role,
+            AugmentedMember::Dangling { role, .. } => role,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum AugmentedElement {
+    Node(Node),
+    Way(AugmentedWay),
+    Relation(AugmentedRelation),
+}
+
+impl AugmentedElement {
+    fn id(&self) -> ElementId {
+        match self {
+            AugmentedElement::Node(node) => ElementId::Node(node.id),
+            AugmentedElement::Way(way) => ElementId::Way(way.id),
+            AugmentedElement::Relation(relation) => ElementId::Relation(relation.id),
+        }
+    }
+
+    fn visible(&self) -> bool {
+        match self {
+            AugmentedElement::Node(node) => node.visible,
+            AugmentedElement::Way(way) => way.visible,
+            AugmentedElement::Relation(relation) => relation.visible,
+        }
+    }
+}
+
+enum Action {
+    Create(AugmentedElement),
+    Modify(AugmentedElement, AugmentedElement),
+    Delete(AugmentedElement, AugmentedElement),
+}
+
+impl Action {
+    fn primary(&self) -> &AugmentedElement {
+        match self {
+            Action::Create(e) => e,
+            Action::Modify(_, new) => new,
+            Action::Delete(_, new) => new,
+        }
+    }
+}
+
+struct Diff {
+    actions: Vec<Action>,
+}
+
+struct DiffBuilder<'txn> {
+    elements: BTreeSet<ElementId>,
+    before: Option<Snapshot<'txn>>,
+    after: Option<Snapshot<'txn>>,
+}
+
+impl<'txn> DiffBuilder<'txn> {
+    fn build(&self) -> Diff {
+        let mut actions: Vec<Action> = Vec::new();
+        let before = self.before.as_ref().unwrap();
+        let Some(after) = self.after.as_ref() else {
+            // if after is None, it means the .osc file was empty, so
+            // we return an empty diff
+            return Diff { actions };
+        };
+
+        for element_id in self.elements.iter() {
+            let old = before.get_augmented_element(*element_id);
+            let new = after.get_augmented_element(*element_id);
+
+            let action = match (old, new) {
+                (Some(old), Some(new)) => {
+                    if new.visible() {
+                        Action::Modify(old, new)
+                    } else {
+                        Action::Delete(old, new)
+                    }
+                }
+                (Some(_old), None) => {
+                    // valid actions should always have a 'new' side (even deletes; the new
+                    // version has visible=false and has the changeset, user, timestamp etc.
+                    // that deleted the element)
+                    panic!("invalid delete (no new side) for {:?}", element_id);
+                }
+                (None, Some(new)) => {
+                    if !new.visible() {
+                        // Element was created and then deleted within this diff window,
+                        // so we don't emit any action
+                        continue;
+                    }
+                    Action::Create(new)
+                }
+                (None, None) => {
+                    continue;
+                }
+            };
+
+            actions.push(action);
+        }
+
+        sort_actions(&mut actions);
+        Diff { actions }
+    }
+}
+
+fn sort_actions(actions: &mut [Action]) {
+    actions.sort_by_key(|a| {
+        let id = a.primary().id();
+        let (kind, n) = match id {
+            ElementId::Node(n) => (0u8, n),
+            ElementId::Way(n) => (1u8, n),
+            ElementId::Relation(n) => (2u8, n),
+        };
+        (kind, n)
+    });
+}
+
+struct Snapshot<'txn> {
+    txn: &'txn osmx::Transaction<'txn>,
+    locations: osmx::Locations<'txn>,
+    nodes: osmx::Nodes<'txn>,
+    ways: osmx::Ways<'txn>,
+    relations: osmx::Relations<'txn>,
+    node_ways: osmx::JoinTable<'txn>,
+    node_relations: osmx::JoinTable<'txn>,
+    way_relations: osmx::JoinTable<'txn>,
+
+    elements: HashMap<ElementId, Element>,
+}
+
+impl<'txn> Snapshot<'txn> {
+    fn new(txn: &'txn osmx::Transaction<'txn>) -> Result<Self, Box<dyn Error>> {
+        let locations = txn.locations()?;
+        let nodes = txn.nodes()?;
+        let ways = txn.ways()?;
+        let relations = txn.relations()?;
+        let node_ways = txn.node_ways()?;
+        let node_relations = txn.node_relations()?;
+        let way_relations = txn.way_relations()?;
+
+        Ok(Self {
+            txn,
+            locations,
+            nodes,
+            ways,
+            relations,
+            node_ways,
+            node_relations,
+            way_relations,
+            elements: HashMap::new(),
+        })
+    }
+
+    fn get_augmented_element(&self, element_id: ElementId) -> Option<AugmentedElement> {
+        if let Some(element) = self.elements.get(&element_id) {
+            let augmented_element = match element {
+                Element::Node(node) => AugmentedElement::Node(node.clone()),
+                Element::Way(way) => {
+                    let way = way.clone();
+                    let id = way.id;
+                    let version = way.version;
+                    let visible = way.visible;
+                    let metadata = way.metadata;
+                    let nodes = way
+                        .nodes
+                        .iter()
+                        .map(|node_id| self.resolve_way_node(id, *node_id))
+                        .collect();
+                    let tags = way.tags;
+                    AugmentedElement::Way(AugmentedWay {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        nodes,
+                        tags,
+                    })
+                }
+                Element::Relation(relation) => {
+                    let relation = relation.clone();
+                    let id = relation.id;
+                    let version = relation.version;
+                    let visible = relation.visible;
+                    let metadata = relation.metadata;
+                    let members = relation
+                        .members
+                        .iter()
+                        .map(|member| self.resolve_member(id, member.id, member.role.clone()))
+                        .collect();
+                    let tags = relation.tags;
+                    AugmentedElement::Relation(AugmentedRelation {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        members,
+                        tags,
+                    })
+                }
+            };
+            Some(augmented_element)
+        } else {
+            match element_id {
+                ElementId::Node(id) => {
+                    let loc = self.locations.get(id)?;
+                    let version = loc.version();
+                    let visible = true; // implicit (deleted elements are not kept in the osmx database)
+                    let lon: f64 = loc.lon();
+                    let lat: f64 = loc.lat();
+                    let (metadata, tags) = if let Some(node) = self.nodes.get(id) {
+                        let metadata = Some(Metadata {
+                            changeset: node.metadata().changeset() as u64,
+                            timestamp: Utc
+                                .timestamp_opt(node.metadata().timestamp() as i64, 0)
+                                .single()
+                                .expect("invalid timestamp"),
+                            uid: node.metadata().uid(),
+                            user: node.metadata().user().to_string(),
+                        });
+                        let tags = node
+                            .tags()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect();
+                        (metadata, tags)
+                    } else {
+                        (None, BTreeMap::new())
+                    };
+                    Some(AugmentedElement::Node(Node {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        lon,
+                        lat,
+                        tags,
+                    }))
+                }
+                ElementId::Way(id) => {
+                    let way = self.ways.get(id)?;
+                    let version = way.metadata().version();
+                    let visible = true; // implicit (deleted elements are not kept in the osmx database)
+                    let nodes = way
+                        .nodes()
+                        .map(|node_id| self.resolve_way_node(id, node_id))
+                        .collect();
+                    let tags = way
+                        .tags()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+                    let metadata = Some(Metadata {
+                        changeset: way.metadata().changeset() as u64,
+                        timestamp: Utc
+                            .timestamp_opt(way.metadata().timestamp() as i64, 0)
+                            .single()
+                            .expect("invalid timestamp"),
+                        uid: way.metadata().uid(),
+                        user: way.metadata().user().to_string(),
+                    });
+                    Some(AugmentedElement::Way(AugmentedWay {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        nodes,
+                        tags,
+                    }))
+                }
+                ElementId::Relation(id) => {
+                    let relation = self.relations.get(id)?;
+                    let version = relation.metadata().version();
+                    let visible = true; // implicit (deleted elements are not kept in the osmx database)
+                    let members = relation
+                        .members()
+                        .map(|m| {
+                            let mid = match m.id() {
+                                osmx::ElementId::Node(id) => ElementId::Node(id),
+                                osmx::ElementId::Way(id) => ElementId::Way(id),
+                                osmx::ElementId::Relation(id) => ElementId::Relation(id),
+                            };
+                            self.resolve_member(id, mid, m.role().to_string())
+                        })
+                        .collect();
+                    let tags = relation
+                        .tags()
+                        .map(|(k, v)| (k.to_string(), v.to_string()))
+                        .collect();
+                    let metadata = Some(Metadata {
+                        changeset: relation.metadata().changeset() as u64,
+                        timestamp: Utc
+                            .timestamp_opt(relation.metadata().timestamp() as i64, 0)
+                            .single()
+                            .expect("invalid timestamp"),
+                        uid: relation.metadata().uid(),
+                        user: relation.metadata().user().to_string(),
+                    });
+                    Some(AugmentedElement::Relation(AugmentedRelation {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        members,
+                        tags,
+                    }))
+                }
+            }
+        }
+    }
+
+    fn set_element(&mut self, element_id: ElementId, element: Element) {
+        self.elements.insert(element_id, element);
+    }
+
+    fn resolve_way_node(&self, parent_way_id: u64, node_id: u64) -> WayNode {
+        match self.get_augmented_element(ElementId::Node(node_id)) {
+            Some(AugmentedElement::Node(node)) => WayNode::Resolved(node),
+            Some(other) => panic!("expected node for way ref, got {:?}", other),
+            None => {
+                eprintln!(
+                    "warning: way {} references node {} which is not in the database",
+                    parent_way_id, node_id
+                );
+                WayNode::Dangling { id: node_id }
+            }
+        }
+    }
+
+    fn resolve_member(
+        &self,
+        parent_relation_id: u64,
+        member_id: ElementId,
+        role: String,
+    ) -> AugmentedMember {
+        match self.get_augmented_element(member_id) {
+            Some(element) => AugmentedMember::Resolved {
+                id: member_id,
+                role,
+                element: Box::new(element),
+            },
+            None => {
+                eprintln!(
+                    "warning: relation {} references member {:?} which is not in the database",
+                    parent_relation_id, member_id
+                );
+                AugmentedMember::Dangling {
+                    id: member_id,
+                    role,
+                }
+            }
+        }
+    }
+}
+
+impl<'txn> Clone for Snapshot<'txn> {
+    fn clone(&self) -> Self {
+        Self {
+            txn: self.txn,
+            locations: self.txn.locations().unwrap(),
+            nodes: self.txn.nodes().unwrap(),
+            ways: self.txn.ways().unwrap(),
+            relations: self.txn.relations().unwrap(),
+            node_ways: self.txn.node_ways().unwrap(),
+            node_relations: self.txn.node_relations().unwrap(),
+            way_relations: self.txn.way_relations().unwrap(),
+            elements: self.elements.clone(),
         }
     }
 }
@@ -40,16 +508,25 @@ pub struct CliArgs {
 
     /// Path to the osc file to read
     osc_file: PathBuf,
+
+    /// Path to write the augmented diff to. If --split is used, this should be a directory.
+    output_path: PathBuf,
+
+    /// Output one augmented diff per changeset, instead of a single augmented diff
+    #[arg(long)]
+    split: bool,
 }
 
-pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
-    let osc_filename: &str = args.osc_file.as_os_str().to_str().unwrap();
-    let osc = Parser::default().parse_file(osc_filename)?;
+type Change = (ElementId, ChangesetId, ActionType, Element);
 
-    // Pass 1
-    // Parse the input OSC file and create a lookup table of the edits it contains
+fn parse_osc(osc_filename: &str) -> Result<Vec<Change>, Box<dyn Error>> {
+    let parse_options = libxml::parser::ParserOptions {
+        no_blanks: true,
+        ..Default::default()
+    };
+    let osc = Parser::default().parse_file_with_options(osc_filename, parse_options)?;
 
-    let mut changes: BTreeMap<ElementId, (ActionType, Node)> = BTreeMap::new();
+    let mut changes: Vec<Change> = Vec::new();
     for block in osc.get_root_element().unwrap().get_child_nodes() {
         if !block.is_element_node() {
             continue;
@@ -73,6 +550,12 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
                 .parse()
                 .expect("failed to parse element id as u64");
 
+            let changeset: u64 = element
+                .get_attribute("changeset")
+                .expect("element has no changeset")
+                .parse()
+                .expect("failed to parse changeset as u64");
+
             let element_id = match &element.get_name()[..] {
                 "node" => ElementId::Node(id),
                 "way" => ElementId::Way(id),
@@ -80,594 +563,511 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
                 other => panic!("unknown element type: {}", other),
             };
 
-            let mut element = element;
-            element.unlink_node();
-            changes.insert(element_id, (action_type, element));
-        }
-    }
+            let version: u32 = element.get_attribute("version").unwrap().parse().unwrap();
+            // OSM replication files don't include a `visible` attribute; deleted
+            // elements appear inside a <delete> block instead. This program tracks
+            // visibility in state snapshots and emits a `visible` attribute into
+            // output adiffs; when reading the input OSC file we derive visibility
+            // from the action type.
+            let visible = action_type != ActionType::Delete;
 
-    // Pass 2
-    // Create the initial output XML tree of actions
+            let metadata = Some(Metadata {
+                changeset,
+                timestamp: DateTime::parse_from_rfc3339(
+                    &element.get_attribute("timestamp").unwrap(),
+                )
+                .expect("failed to parse timestamp")
+                .with_timezone(&Utc),
+                uid: element.get_attribute("uid").unwrap().parse().unwrap(),
+                user: element.get_attribute("user").unwrap().to_string(),
+            });
 
-    let db = osmx::Database::open(&args.osmx_file)?;
-    let txn = osmx::Transaction::begin(&db)?;
-    let locations = txn.locations()?;
-    let nodes = txn.nodes()?;
-    let ways = txn.ways()?;
-    let relations = txn.relations()?;
+            let tags: Tags = element
+                .get_child_nodes()
+                .iter()
+                .filter(|child| child.get_name() == "tag")
+                .map(|tag| {
+                    (
+                        tag.get_attribute("k").unwrap().to_string(),
+                        tag.get_attribute("v").unwrap().to_string(),
+                    )
+                })
+                .collect();
 
-    let mut adiff = Document::new().unwrap();
-    adiff.set_root_element(&Node::new("osm", None, &adiff).unwrap());
-    let mut root = adiff.get_root_element().unwrap();
-
-    let update_element_from_metadata = |element: &mut Node, metadata: &osmx::Metadata| {
-        // TODO: this helper function exists to avoid duplicating the logic in three places. I first
-        // tried just extracting the Metadata from the node/way/rel in a match expression and then
-        // acting on it, but that doesn't work because of current lifetime limitations in osmx-rs.
-        // Specifically, metadata() returns a struct that cannot outlive the node/way/ relation it
-        // came from, even though conceptually its only bound should be to the lifetime of the LMDB
-        // transaction. I'm not sure how to fix this, I need to understand capnp/ better first
-        element.set_attribute("version", &format!("{}", metadata.version()));
-        element.set_attribute("changeset", &format!("{}", metadata.changeset()));
-        let timestamp = chrono::DateTime::from_timestamp(metadata.timestamp() as i64, 0).unwrap();
-        element.set_attribute(
-            "timestamp",
-            &timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        );
-        element.set_attribute("uid", &format!("{}", metadata.uid()));
-        element.set_attribute("user", metadata.user());
-    };
-
-    let set_old_metadata =
-        |element_id: ElementId, element: &mut Node| -> Result<(), Box<dyn Error>> {
-            match element_id {
+            let element = match element_id {
                 ElementId::Node(id) => {
-                    if let Some(loc) = locations.get(id) {
-                        element.set_attribute("version", &format!("{}", loc.version()));
-
-                        if let Some(node) = nodes.get(id) {
-                            update_element_from_metadata(element, &node.metadata());
-                        } else {
-                            // element.set_attribute("changeset", "?");
-                            // element.set_attribute("timestamp", "?");
-                            // element.set_attribute("uid", "?");
-                            // element.set_attribute("user", "?");
-                        }
-                    } else {
-                        eprintln!("No old loc found for tagless node {}", id);
-                    }
+                    let lon: f64 = element.get_attribute("lon").unwrap().parse().unwrap();
+                    let lat: f64 = element.get_attribute("lat").unwrap().parse().unwrap();
+                    Element::Node(Node {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        lon,
+                        lat,
+                        tags,
+                    })
                 }
                 ElementId::Way(id) => {
-                    if let Some(way) = ways.get(id) {
-                        update_element_from_metadata(element, &way.metadata());
-                    }
+                    let nodes: Vec<u64> = element
+                        .get_child_nodes()
+                        .iter()
+                        .filter(|child| child.get_name() == "nd")
+                        .map(|nd| nd.get_attribute("ref").unwrap().parse().unwrap())
+                        .collect();
+                    Element::Way(Way {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        nodes,
+                        tags,
+                    })
                 }
                 ElementId::Relation(id) => {
-                    if let Some(rel) = relations.get(id) {
-                        update_element_from_metadata(element, &rel.metadata());
-                    }
+                    let members: Vec<Member> = element
+                        .get_child_nodes()
+                        .iter()
+                        .filter(|child| child.get_name() == "member")
+                        .map(|member| {
+                            let refnum: u64 = member.get_attribute("ref").unwrap().parse().unwrap();
+                            let role = member.get_attribute("role").unwrap().to_string();
+
+                            let mtype = member
+                                .get_attribute("type")
+                                .expect("member has no type attribute");
+                            let id = match &mtype[..] {
+                                "node" => ElementId::Node(refnum),
+                                "way" => ElementId::Way(refnum),
+                                "relation" => ElementId::Relation(refnum),
+                                other => panic!("unknown member type: {}", other),
+                            };
+
+                            Member { id, role }
+                        })
+                        .collect();
+                    Element::Relation(Relation {
+                        id,
+                        version,
+                        visible,
+                        metadata,
+                        members,
+                        tags,
+                    })
                 }
             };
 
-            Ok(())
-        };
-
-    // Instead of adding actions directly to the XML tree, create them and store in BTreeMap
-    let mut actions: BTreeMap<ElementId, Node> = BTreeMap::new();
-    for (element_id, (action_type, element)) in changes.iter_mut() {
-        let mut action = Node::new("action", None, &adiff).unwrap();
-        action.set_attribute("type", action_type.to_str());
-
-        let mut element = adiff.import_node(element).unwrap();
-
-        match action_type {
-            ActionType::Create => {
-                action.add_child(&mut element)?;
-            }
-            ActionType::Modify | ActionType::Delete => {
-                let mut new = Node::new("new", None, &adiff).unwrap();
-                new.add_child(&mut element)?;
-
-                if *action_type == ActionType::Delete {
-                    element.set_attribute("visible", "false");
-                }
-
-                let mut old = Node::new("old", None, &adiff).unwrap();
-                let mut old_element = Node::new(&element.get_name(), None, &adiff).unwrap();
-                old_element.set_attribute("id", &element.get_attribute("id").unwrap());
-                set_old_metadata(*element_id, &mut old_element)?;
-
-                match element_id {
-                    ElementId::Node(id) => {
-                        if let Some(loc) = locations.get(*id) {
-                            old_element.set_attribute("lon", &format!("{:.7}", loc.lon()));
-                            old_element.set_attribute("lat", &format!("{:.7}", loc.lat()));
-
-                            if let Some(node) = nodes.get(*id) {
-                                add_tags(&adiff, &mut old_element, node.tags());
-                            } else {
-                                // tagless node, nothing to do
-                            }
-                        } else {
-                            eprintln!("could not find {:?} in db, changing to create", element_id);
-                            action.set_attribute("type", ActionType::Create.to_str());
-                            element.unlink_node();
-                            old.unlink_node();
-                            new.unlink_node();
-                            action.add_child(&mut element)?;
-                        }
-                    }
-                    ElementId::Way(id) => {
-                        if let Some(way) = ways.get(*id) {
-                            for node_id in way.nodes() {
-                                let mut nd = Node::new("nd", None, &adiff).unwrap();
-                                nd.set_attribute("ref", &format!("{}", node_id));
-                                old_element.add_child(&mut nd)?;
-                            }
-
-                            add_tags(&adiff, &mut old_element, way.tags());
-                        } else {
-                            eprintln!("could not find {:?} in db, changing to create", element_id);
-                            action.set_attribute("type", ActionType::Create.to_str());
-                            element.unlink_node();
-                            old.unlink_node();
-                            new.unlink_node();
-                            action.add_child(&mut element)?;
-                        }
-                    }
-                    ElementId::Relation(id) => {
-                        if let Some(rel) = relations.get(*id) {
-                            for m in rel.members() {
-                                let mut member = Node::new("member", None, &adiff).unwrap();
-                                match m.id() {
-                                    osmx::ElementId::Node(id) => {
-                                        member.set_attribute("type", "node");
-                                        member.set_attribute("ref", &format!("{}", id));
-                                    }
-                                    osmx::ElementId::Way(id) => {
-                                        member.set_attribute("type", "way");
-                                        member.set_attribute("ref", &format!("{}", id));
-                                    }
-                                    osmx::ElementId::Relation(id) => {
-                                        member.set_attribute("type", "relation");
-                                        member.set_attribute("ref", &format!("{}", id));
-                                    }
-                                }
-                                member.set_attribute("role", m.role());
-                                old_element.add_child(&mut member)?;
-                            }
-
-                            add_tags(&adiff, &mut old_element, rel.tags());
-                        } else {
-                            eprintln!("could not find {:?} in db, changing to create", element_id);
-                            action.set_attribute("type", ActionType::Create.to_str());
-                            element.unlink_node();
-                            old.unlink_node();
-                            new.unlink_node();
-                            action.add_child(&mut element)?;
-                        }
-                    }
-                }
-
-                old.add_child(&mut old_element)?;
-
-                action.add_child(&mut old)?;
-                action.add_child(&mut new)?;
-            }
+            changes.push((element_id, changeset, action_type, element));
         }
-
-        actions.insert(*element_id, action);
     }
 
-    // Pass 3
-    // Augment the elements in each action. Ways get node locations added to their <nd>
-    // children and relations get their <member> elements inlined.
+    Ok(changes)
+}
 
-    let get_lon_lat = |node_id: u64, use_new: bool| {
-        let element_id = ElementId::Node(node_id);
-        if use_new && changes.contains_key(&element_id) {
-            let (_, node) = changes.get(&element_id).unwrap();
-            let lon: f64 = node.get_attribute("lon").unwrap().parse().unwrap();
-            let lat: f64 = node.get_attribute("lat").unwrap().parse().unwrap();
-            (lon, lat)
+pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
+    let osc_filename: &str = args.osc_file.as_os_str().to_str().unwrap();
+
+    let changes = parse_osc(osc_filename)?;
+
+    let db = osmx::Database::open(&args.osmx_file)?;
+    let txn = osmx::Transaction::begin(&db)?;
+    let mut snapshot = Snapshot::new(&txn)?;
+
+    let all_changeset_ids: HashSet<ChangesetId> =
+        changes.iter().map(|(_, cid, _, _)| *cid).collect();
+    let last_indices: HashMap<ChangesetId, usize> = all_changeset_ids
+        .iter()
+        .map(|cid| {
+            (
+                *cid,
+                changes
+                    .iter()
+                    .rposition(|(_, cid2, _, _)| *cid2 == *cid)
+                    .unwrap(),
+            )
+        })
+        .collect();
+
+    let mut diff_builders: HashMap<ChangesetId, DiffBuilder> = HashMap::new();
+
+    if !args.split {
+        diff_builders.insert(
+            0,
+            DiffBuilder {
+                elements: BTreeSet::new(),
+                before: Some(snapshot.clone()),
+                after: None,
+            },
+        );
+    }
+
+    for (idx, (element_id, changeset_id, action_type, element)) in changes.into_iter().enumerate() {
+        let diff_builder = if args.split {
+            diff_builders
+                .entry(changeset_id)
+                .or_insert_with(|| DiffBuilder {
+                    elements: BTreeSet::new(),
+                    before: Some(snapshot.clone()),
+                    after: None,
+                })
         } else {
-            let loc = locations.get(node_id).unwrap();
-            (loc.lon(), loc.lat())
-        }
-    };
-
-    let augment_nd = |nd: &mut Node, use_new: bool| {
-        let id: u64 = nd.get_attribute("ref").unwrap().parse().unwrap();
-        let (lon, lat) = get_lon_lat(id, use_new);
-        nd.set_attribute("lon", &format!("{:.7}", lon));
-        nd.set_attribute("lat", &format!("{:.7}", lat));
-    };
-
-    let augment_member = |member: &mut Node, use_new: bool| -> Result<(), Box<dyn Error>> {
-        let element_type = member.get_attribute("type").unwrap();
-        let element_ref: u64 = member.get_attribute("ref").unwrap().parse().unwrap();
-
-        match &element_type[..] {
-            "node" => {
-                let (lon, lat) = get_lon_lat(element_ref, use_new);
-                member.set_attribute("lon", &format!("{:.7}", lon));
-                member.set_attribute("lat", &format!("{:.7}", lat));
-            }
-            "way" => {
-                let element_id = ElementId::Way(element_ref);
-                if use_new && changes.contains_key(&element_id) {
-                    let (_, way) = changes.get(&element_id).unwrap();
-                    for child in way
-                        .get_child_nodes()
-                        .iter_mut()
-                        .filter(|child| child.get_name() == "nd")
-                    {
-                        let node_id: u64 = child.get_attribute("ref").unwrap().parse().unwrap();
-                        let mut nd = Node::new("nd", None, &adiff).unwrap();
-                        nd.set_attribute("ref", &format!("{}", node_id));
-                        let (lon, lat) = get_lon_lat(node_id, use_new);
-                        nd.set_attribute("lon", &format!("{:.7}", lon));
-                        nd.set_attribute("lat", &format!("{:.7}", lat));
-                        member.add_child(&mut nd)?;
-                    }
-                } else {
-                    let way = ways.get(element_ref).unwrap();
-                    for node_id in way.nodes() {
-                        let mut nd = Node::new("nd", None, &adiff).unwrap();
-                        nd.set_attribute("ref", &format!("{}", node_id));
-                        let (lon, lat) = get_lon_lat(node_id, use_new);
-                        nd.set_attribute("lon", &format!("{:.7}", lon));
-                        nd.set_attribute("lat", &format!("{:.7}", lat));
-                        member.add_child(&mut nd)?;
-                    }
-                }
-            }
-            "relation" => {}
-            _ => {}
+            diff_builders.get_mut(&0).unwrap()
         };
 
-        Ok(())
-    };
+        diff_builder.elements.insert(element_id);
 
-    let augment = |element: &mut Node, use_new: bool| {
-        match &element.get_name()[..] {
-            "way" => {
-                for child in element
-                    .get_child_nodes()
-                    .iter_mut()
-                    .filter(|child| child.get_name() == "nd")
-                {
-                    augment_nd(child, use_new);
-                }
-            }
-            "relation" => {
-                for child in element
-                    .get_child_nodes()
-                    .iter_mut()
-                    .filter(|child| child.get_name() == "member")
-                {
-                    augment_member(child, use_new);
-                }
-            }
-            _ => {}
-        };
-    };
-
-    for (_, mut action) in actions.iter_mut() {
-        match &action.get_attribute("type").unwrap()[..] {
-            "create" => {
-                let mut element = action.get_first_child().unwrap();
-                augment(&mut element, true);
-            }
-            "modify" => {
-                let old = action.get_first_child().unwrap();
-                augment(&mut old.get_first_child().unwrap(), false);
-                let new = old.get_next_sibling().unwrap();
-                augment(&mut new.get_first_child().unwrap(), true);
-            }
-            "delete" => {
-                let old = action.get_first_child().unwrap();
-                augment(&mut old.get_first_child().unwrap(), false);
-            }
-            _ => unimplemented!(),
-        }
-    }
-
-    // Pass 4: Find changes that propagate to referencing elements
-    let node_ways = txn.node_ways()?;
-    let node_relations = txn.node_relations()?;
-    let way_relations = txn.way_relations()?;
-
-    let mut affected_ways: BTreeMap<u64, ()> = BTreeMap::new();
-    let mut affected_relations: BTreeMap<u64, ()> = BTreeMap::new();
-
-    // find all affected elements
-    for (element_id, (action_type, element)) in changes.iter() {
-        if *action_type != ActionType::Modify {
-            continue;
-        }
-
-        match element_id {
-            ElementId::Node(node_id) => {
-                // Check if node location changed
-                let old_loc = if let Some(loc) = locations.get(*node_id) {
-                    (loc.lat(), loc.lon())
-                } else {
-                    continue;
-                };
-
-                let new_loc = {
-                    let lat: f64 = element.get_attribute("lat").unwrap().parse().unwrap();
-                    let lon: f64 = element.get_attribute("lon").unwrap().parse().unwrap();
-                    (lat, lon)
-                };
-
-                if old_loc != new_loc {
-                    // Add all ways containing this node
-                    for way_id in node_ways.get(*node_id) {
-                        if !changes.contains_key(&ElementId::Way(way_id)) {
-                            affected_ways.insert(way_id, ());
-
-                            // Also add relations that contain this affected way
-                            for rel_id in way_relations.get(way_id) {
-                                if !changes.contains_key(&ElementId::Relation(rel_id)) {
-                                    affected_relations.insert(rel_id, ());
-                                }
-                            }
+        if action_type == ActionType::Modify {
+            match element_id {
+                ElementId::Node(node_id) => {
+                    // Node moved (or had tags changed); propagate to parent ways and
+                    // relations, plus the parent relations of those parent ways.
+                    for way_id in snapshot.node_ways.get(node_id) {
+                        diff_builder.elements.insert(ElementId::Way(way_id));
+                        for relation_id in snapshot.way_relations.get(way_id) {
+                            diff_builder
+                                .elements
+                                .insert(ElementId::Relation(relation_id));
                         }
                     }
 
-                    // Add all relations containing this node
-                    for rel_id in node_relations.get(*node_id) {
-                        if !changes.contains_key(&ElementId::Relation(rel_id)) {
-                            affected_relations.insert(rel_id, ());
-                        }
+                    for relation_id in snapshot.node_relations.get(node_id) {
+                        diff_builder
+                            .elements
+                            .insert(ElementId::Relation(relation_id));
                     }
                 }
-            }
-            ElementId::Way(way_id) => {
-                // Check if way's node list changed
-                let old_way_nodes = if let Some(way) = ways.get(*way_id) {
-                    way.nodes().collect::<Vec<_>>()
-                } else {
-                    continue;
-                };
-
-                let new_way_nodes = element
-                    .get_child_nodes()
-                    .iter()
-                    .filter(|child| child.get_name() == "nd")
-                    .map(|nd| nd.get_attribute("ref").unwrap().parse().unwrap())
-                    .collect::<Vec<_>>();
-
-                if old_way_nodes != new_way_nodes {
-                    // Add all relations containing this way
-                    for rel_id in way_relations.get(*way_id) {
-                        if !changes.contains_key(&ElementId::Relation(rel_id)) {
-                            affected_relations.insert(rel_id, ());
-                        }
+                ElementId::Way(way_id) => {
+                    // Way's node list or tags changed; propagate to parent relations.
+                    for relation_id in snapshot.way_relations.get(way_id) {
+                        diff_builder
+                            .elements
+                            .insert(ElementId::Relation(relation_id));
                     }
                 }
+                ElementId::Relation(_) => {}
             }
-            ElementId::Relation(_) => {}
+        }
+
+        snapshot.set_element(element_id, element);
+
+        if idx == last_indices[&changeset_id] {
+            diff_builder.after = Some(snapshot.clone());
         }
     }
 
-    // add affected ways to the output
-    for way_id in affected_ways.keys() {
-        let mut action = Node::new("action", None, &adiff).unwrap();
-        action.set_attribute("type", "modify");
+    if args.split {
+        // Create the output directory if it doesn't exist
+        std::fs::create_dir_all(&args.output_path)?;
 
-        let mut old = Node::new("old", None, &adiff).unwrap();
-        let mut way_element = Node::new("way", None, &adiff).unwrap();
-        way_element.set_attribute("id", &format!("{}", way_id));
-
-        if let Some(way) = ways.get(*way_id) {
-            update_element_from_metadata(&mut way_element, &way.metadata());
-
-            for node_id in way.nodes() {
-                let mut nd = Node::new("nd", None, &adiff).unwrap();
-                nd.set_attribute("ref", &format!("{}", node_id));
-                way_element.add_child(&mut nd)?;
-            }
-
-            add_tags(&adiff, &mut way_element, way.tags());
+        for (id, diff_builder) in diff_builders.iter() {
+            let output_filename = args.output_path.join(format!("{}.adiff", id));
+            let mut output_file = std::fs::File::create(output_filename)?;
+            let diff = diff_builder.build();
+            write!(&mut output_file, "{}", adiff_to_string(&diff)?)?;
         }
-
-        old.add_child(&mut way_element)?;
-        augment(&mut way_element, false);
-
-        // Create new version of the way (wish we could use clone() here but
-        // trying to insert a cloned element into the tree is causing a runtime error)
-        let mut new = Node::new("new", None, &adiff).unwrap();
-        let mut new_way_element = Node::new("way", None, &adiff).unwrap();
-        new_way_element.set_attribute("id", &format!("{}", way_id));
-
-        if let Some(way) = ways.get(*way_id) {
-            update_element_from_metadata(&mut new_way_element, &way.metadata());
-
-            for node_id in way.nodes() {
-                let mut nd = Node::new("nd", None, &adiff).unwrap();
-                nd.set_attribute("ref", &format!("{}", node_id));
-                new_way_element.add_child(&mut nd)?;
-            }
-
-            add_tags(&adiff, &mut new_way_element, way.tags());
-        }
-
-        new.add_child(&mut new_way_element)?;
-        augment(&mut new_way_element, true);
-
-        action.add_child(&mut old)?;
-        action.add_child(&mut new)?;
-
-        actions.insert(ElementId::Way(*way_id), action);
+    } else {
+        let mut output_file = std::fs::File::create(&args.output_path)?;
+        let diff = diff_builders.get(&0).unwrap().build();
+        write!(&mut output_file, "{}", adiff_to_string(&diff)?)?;
     }
-
-    // add affected relations to the output
-    for rel_id in affected_relations.keys() {
-        let mut action = Node::new("action", None, &adiff).unwrap();
-        action.set_attribute("type", "modify");
-
-        let mut old = Node::new("old", None, &adiff).unwrap();
-        let mut relation_element = Node::new("relation", None, &adiff).unwrap();
-        relation_element.set_attribute("id", &format!("{}", rel_id));
-
-        if let Some(rel) = relations.get(*rel_id) {
-            update_element_from_metadata(&mut relation_element, &rel.metadata());
-
-            for m in rel.members() {
-                let mut member = Node::new("member", None, &adiff).unwrap();
-                match m.id() {
-                    osmx::ElementId::Node(id) => {
-                        member.set_attribute("type", "node");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                    osmx::ElementId::Way(id) => {
-                        member.set_attribute("type", "way");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                    osmx::ElementId::Relation(id) => {
-                        member.set_attribute("type", "relation");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                }
-                member.set_attribute("role", m.role());
-                relation_element.add_child(&mut member)?;
-            }
-
-            add_tags(&adiff, &mut relation_element, rel.tags());
-        }
-
-        old.add_child(&mut relation_element)?;
-        augment(&mut relation_element, false);
-
-        // Create new version of the relation (wish we could use clone() here but
-        // trying to insert a cloned element into the tree is causing a runtime error)
-        let mut new = Node::new("new", None, &adiff).unwrap();
-        let mut new_relation_element = Node::new("relation", None, &adiff).unwrap();
-        new_relation_element.set_attribute("id", &format!("{}", rel_id));
-
-        if let Some(rel) = relations.get(*rel_id) {
-            update_element_from_metadata(&mut new_relation_element, &rel.metadata());
-
-            for m in rel.members() {
-                let mut member = Node::new("member", None, &adiff).unwrap();
-                match m.id() {
-                    osmx::ElementId::Node(id) => {
-                        member.set_attribute("type", "node");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                    osmx::ElementId::Way(id) => {
-                        member.set_attribute("type", "way");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                    osmx::ElementId::Relation(id) => {
-                        member.set_attribute("type", "relation");
-                        member.set_attribute("ref", &format!("{}", id));
-                    }
-                }
-                member.set_attribute("role", m.role());
-                new_relation_element.add_child(&mut member)?;
-            }
-
-            add_tags(&adiff, &mut new_relation_element, rel.tags());
-        }
-
-        new.add_child(&mut new_relation_element)?;
-        augment(&mut new_relation_element, true);
-
-        action.add_child(&mut old)?;
-        action.add_child(&mut new)?;
-
-        actions.insert(ElementId::Relation(*rel_id), action);
-    }
-
-    // After all passes are complete, add actions to the XML tree in sorted order
-    for (_, mut action) in actions {
-        root.add_child(&mut action)?;
-    }
-
-    // Pass 5: Add bounding boxes to elements
-    for action in root.get_child_nodes().iter_mut() {
-        if action.get_name() != "action" {
-            continue;
-        }
-
-        let old = action.get_first_child().unwrap();
-        if let Some(osm_obj) = old.get_first_child() {
-            // Find all nodes in this element (including nested ones in ways/relations)
-            let mut nodes = Vec::new();
-
-            // Helper function to recursively find all nodes
-            fn find_nodes(node: &Node, nodes: &mut Vec<(f64, f64)>) {
-                for child in node.get_child_nodes() {
-                    if child.get_name() == "nd" {
-                        let lon: f64 = child.get_attribute("lon").unwrap().parse().unwrap();
-                        let lat: f64 = child.get_attribute("lat").unwrap().parse().unwrap();
-                        nodes.push((lon, lat));
-                    } else if child.get_name() == "member" {
-                        // For relation members, recursively search for nodes
-                        find_nodes(&child, nodes);
-                    }
-                }
-            }
-
-            find_nodes(&osm_obj, &mut nodes);
-
-            if !nodes.is_empty() {
-                let min_lon = nodes
-                    .iter()
-                    .map(|(lon, _)| *lon)
-                    .fold(f64::INFINITY, f64::min);
-                let min_lat = nodes
-                    .iter()
-                    .map(|(_, lat)| *lat)
-                    .fold(f64::INFINITY, f64::min);
-                let max_lon = nodes
-                    .iter()
-                    .map(|(lon, _)| *lon)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                let max_lat = nodes
-                    .iter()
-                    .map(|(_, lat)| *lat)
-                    .fold(f64::NEG_INFINITY, f64::max);
-
-                let mut bounds = Node::new("bounds", None, &adiff).unwrap();
-                bounds.set_attribute("minlon", &format!("{:.7}", min_lon));
-                bounds.set_attribute("minlat", &format!("{:.7}", min_lat));
-                bounds.set_attribute("maxlon", &format!("{:.7}", max_lon));
-                bounds.set_attribute("maxlat", &format!("{:.7}", max_lat));
-
-                // Add bounds as first child
-                let mut first_child = osm_obj.get_first_child().unwrap();
-                first_child.add_prev_sibling(&mut bounds);
-            }
-        }
-    }
-
-    let mut options = SaveOptions::default();
-    options.format = true;
-    options.non_significant_whitespace = true;
-
-    write!(&io::stdout(), "{}", &adiff.to_string_with_options(options))?; // FIXME: handle SIGPIPE
 
     Ok(())
 }
 
-fn add_tags<'a>(
-    doc: &Document,
-    element: &mut Node,
-    tags: impl Iterator<Item = (&'a str, &'a str)>,
-) {
-    for kv in tags {
-        add_tag(doc, element, kv)
+fn new_xml_node(name: &str, doc: &Document) -> anyhow::Result<XmlNode> {
+    XmlNode::new(name, None, doc).map_err(|()| anyhow!("failed to create XML node `{name}`"))
+}
+
+trait XmlNodeExt {
+    fn set_attr(&mut self, name: &str, value: &str) -> anyhow::Result<()>;
+    fn set_text(&mut self, content: &str) -> anyhow::Result<()>;
+    fn append(&mut self, child: &mut XmlNode) -> anyhow::Result<()>;
+}
+
+impl XmlNodeExt for XmlNode {
+    fn set_attr(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
+        self.set_attribute(name, value).map_err(anyhow::Error::msg)
+    }
+    fn set_text(&mut self, content: &str) -> anyhow::Result<()> {
+        self.set_content(content).map_err(anyhow::Error::msg)
+    }
+    fn append(&mut self, child: &mut XmlNode) -> anyhow::Result<()> {
+        self.add_child(child).map_err(anyhow::Error::msg)
     }
 }
 
-fn add_tag(doc: &Document, element: &mut Node, kv: (&str, &str)) {
-    let mut tag = Node::new("tag", None, doc).unwrap();
-    tag.set_attribute("k", &kv.0);
-    tag.set_attribute("v", &kv.1);
-    element.add_child(&mut tag);
+fn add_tags<'a>(
+    doc: &Document,
+    element: &mut XmlNode,
+    tags: impl Iterator<Item = (&'a String, &'a String)>,
+) -> anyhow::Result<()> {
+    for kv in tags {
+        add_tag(doc, element, kv)?;
+    }
+    Ok(())
+}
+
+fn add_tag(doc: &Document, element: &mut XmlNode, kv: (&String, &String)) -> anyhow::Result<()> {
+    let mut tag = new_xml_node("tag", doc)?;
+    tag.set_attr("k", kv.0)?;
+    tag.set_attr("v", kv.1)?;
+    element.append(&mut tag)
+}
+
+fn add_metadata(element: &mut XmlNode, metadata: &Metadata) -> anyhow::Result<()> {
+    element.set_attr("changeset", &metadata.changeset.to_string())?;
+    element.set_attr(
+        "timestamp",
+        &metadata
+            .timestamp
+            .to_rfc3339_opts(SecondsFormat::Secs, true),
+    )?;
+    element.set_attr("uid", &metadata.uid.to_string())?;
+    element.set_attr("user", &metadata.user)?;
+    Ok(())
+}
+
+fn add_nds(doc: &Document, element: &mut XmlNode, nodes: &[WayNode]) -> anyhow::Result<()> {
+    for n in nodes {
+        let mut nd = new_xml_node("nd", doc)?;
+        match n {
+            WayNode::Resolved(node) => {
+                nd.set_attr("ref", &node.id.to_string())?;
+                nd.set_attr("version", &node.version.to_string())?;
+                nd.set_attr("lon", &format!("{:.7}", node.lon))?;
+                nd.set_attr("lat", &format!("{:.7}", node.lat))?;
+            }
+            WayNode::Dangling { id } => {
+                nd.set_attr("ref", &id.to_string())?;
+            }
+        }
+        element.append(&mut nd)?;
+    }
+    Ok(())
+}
+
+fn adiff_to_string(diff: &Diff) -> anyhow::Result<String> {
+    let mut adiff = Document::new().map_err(|()| anyhow!("failed to create XML document"))?;
+    let mut root = new_xml_node("osm", &adiff)?;
+    root.set_attr("version", "0.6")?;
+    root.set_attr("generator", "osmx-rs")?;
+    adiff.set_root_element(&root);
+
+    for action in &diff.actions {
+        let mut action_element = new_xml_node("action", &adiff)?;
+        match action {
+            Action::Create(element) => {
+                action_element.set_attr("type", "create")?;
+                action_element.append(&mut element_to_xml(&adiff, element)?)?;
+            }
+            Action::Modify(old_element, new_element) => {
+                action_element.set_attr("type", "modify")?;
+
+                let mut old = new_xml_node("old", &adiff)?;
+                let mut new = new_xml_node("new", &adiff)?;
+                old.append(&mut element_to_xml(&adiff, old_element)?)?;
+                new.append(&mut element_to_xml(&adiff, new_element)?)?;
+                action_element.append(&mut old)?;
+                action_element.append(&mut new)?;
+            }
+            Action::Delete(old_element, new_element) => {
+                action_element.set_attr("type", "delete")?;
+                let mut old = new_xml_node("old", &adiff)?;
+                let mut new = new_xml_node("new", &adiff)?;
+                old.append(&mut element_to_xml(&adiff, old_element)?)?;
+                new.append(&mut element_to_xml(&adiff, new_element)?)?;
+                action_element.append(&mut old)?;
+                action_element.append(&mut new)?;
+            }
+        }
+        root.append(&mut action_element)?;
+    }
+
+    let options = SaveOptions {
+        format: true,
+        non_significant_whitespace: true,
+        ..Default::default()
+    };
+
+    Ok(adiff.to_string_with_options(options))
+}
+
+fn element_to_xml(doc: &Document, element: &AugmentedElement) -> anyhow::Result<XmlNode> {
+    match element {
+        AugmentedElement::Node(node) => {
+            let mut xml_node = new_xml_node("node", doc)?;
+            xml_node.set_attr("id", &format!("{}", node.id))?;
+            xml_node.set_attr("version", &format!("{}", node.version))?;
+
+            if !node.visible {
+                xml_node.set_attr("visible", "false")?;
+            }
+
+            xml_node.set_attr("lon", &format!("{:.7}", node.lon))?;
+            xml_node.set_attr("lat", &format!("{:.7}", node.lat))?;
+
+            if let Some(metadata) = &node.metadata {
+                add_metadata(&mut xml_node, metadata)?;
+            }
+
+            add_tags(doc, &mut xml_node, node.tags.iter())?;
+
+            Ok(xml_node)
+        }
+        AugmentedElement::Way(way) => {
+            let mut xml_node = new_xml_node("way", doc)?;
+            xml_node.set_attr("id", &format!("{}", way.id))?;
+            xml_node.set_attr("version", &format!("{}", way.version))?;
+
+            if !way.visible {
+                xml_node.set_attr("visible", "false")?;
+            }
+
+            if let Some(metadata) = &way.metadata {
+                add_metadata(&mut xml_node, metadata)?;
+            }
+
+            if let Some(b) = bounds_for(element) {
+                add_bounds(doc, &mut xml_node, &b)?;
+            }
+            add_nds(doc, &mut xml_node, &way.nodes)?;
+            add_tags(doc, &mut xml_node, way.tags.iter())?;
+
+            Ok(xml_node)
+        }
+        AugmentedElement::Relation(relation) => {
+            let mut xml_node = new_xml_node("relation", doc)?;
+            xml_node.set_attr("id", &format!("{}", relation.id))?;
+            xml_node.set_attr("version", &format!("{}", relation.version))?;
+
+            if !relation.visible {
+                xml_node.set_attr("visible", "false")?;
+            }
+
+            if let Some(metadata) = &relation.metadata {
+                add_metadata(&mut xml_node, metadata)?;
+            }
+
+            if let Some(b) = bounds_for(element) {
+                add_bounds(doc, &mut xml_node, &b)?;
+            }
+            for member in &relation.members {
+                let mut m = new_xml_node("member", doc)?;
+                let (type_str, ref_str) = match member.id() {
+                    ElementId::Node(id) => ("node", id.to_string()),
+                    ElementId::Way(id) => ("way", id.to_string()),
+                    ElementId::Relation(id) => ("relation", id.to_string()),
+                };
+                m.set_attr("type", type_str)?;
+                m.set_attr("ref", &ref_str)?;
+                m.set_attr("role", member.role())?;
+
+                if let AugmentedMember::Resolved { element, .. } = member {
+                    match &**element {
+                        AugmentedElement::Node(node) => {
+                            m.set_attr("lat", &format!("{:.7}", node.lat))?;
+                            m.set_attr("lon", &format!("{:.7}", node.lon))?;
+                        }
+                        AugmentedElement::Way(way) => {
+                            add_nds(doc, &mut m, &way.nodes)?;
+                        }
+                        AugmentedElement::Relation(_) => {
+                            // TODO: should sub-relation members be recursively augmented?
+                            // For now, they are not.
+                        }
+                    }
+                }
+
+                xml_node.append(&mut m)?;
+            }
+            add_tags(doc, &mut xml_node, relation.tags.iter())?;
+
+            Ok(xml_node)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    minlat: f64,
+    minlon: f64,
+    maxlat: f64,
+    maxlon: f64,
+}
+
+fn add_bounds(doc: &Document, parent: &mut XmlNode, b: &Bounds) -> anyhow::Result<()> {
+    let mut bounds = new_xml_node("bounds", doc)?;
+    bounds.set_attr("minlat", &format!("{:.7}", b.minlat))?;
+    bounds.set_attr("minlon", &format!("{:.7}", b.minlon))?;
+    bounds.set_attr("maxlat", &format!("{:.7}", b.maxlat))?;
+    bounds.set_attr("maxlon", &format!("{:.7}", b.maxlon))?;
+    parent.append(&mut bounds)
+}
+
+fn collect_coords(element: &AugmentedElement, out: &mut Vec<(f64, f64)>) {
+    match element {
+        AugmentedElement::Node(_) => {}
+        AugmentedElement::Way(way) => {
+            for n in &way.nodes {
+                if let WayNode::Resolved(node) = n {
+                    out.push((node.lon, node.lat));
+                }
+            }
+        }
+        AugmentedElement::Relation(rel) => {
+            for m in &rel.members {
+                let AugmentedMember::Resolved { element, .. } = m else {
+                    continue;
+                };
+                match &**element {
+                    AugmentedElement::Node(node) => {
+                        out.push((node.lon, node.lat));
+                    }
+                    AugmentedElement::Way(way) => {
+                        for n in &way.nodes {
+                            if let WayNode::Resolved(node) = n {
+                                out.push((node.lon, node.lat));
+                            }
+                        }
+                    }
+                    AugmentedElement::Relation(_) => {
+                        // TODO: should we recurse into sub-relations and
+                        // include their members in the bbox calculation?
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn bounds_for(element: &AugmentedElement) -> Option<Bounds> {
+    let mut coords = Vec::new();
+    collect_coords(element, &mut coords);
+    if coords.is_empty() {
+        return None;
+    }
+    let mut minlon = f64::INFINITY;
+    let mut minlat = f64::INFINITY;
+    let mut maxlon = f64::NEG_INFINITY;
+    let mut maxlat = f64::NEG_INFINITY;
+    for (lon, lat) in coords {
+        if lon < minlon {
+            minlon = lon;
+        }
+        if lon > maxlon {
+            maxlon = lon;
+        }
+        if lat < minlat {
+            minlat = lat;
+        }
+        if lat > maxlat {
+            maxlat = lat;
+        }
+    }
+    Some(Bounds {
+        minlon,
+        minlat,
+        maxlon,
+        maxlat,
+    })
 }

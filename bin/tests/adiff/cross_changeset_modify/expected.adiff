@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="10" version="1" lon="0.0000000" lat="0.0000000" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <tag k="highway" v="bus_stop"/>
+      </node>
+    </old>
+    <new>
+      <node id="10" version="4" lon="0.0000000" lat="0.0000000" changeset="202" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+        <tag k="bin" v="no"/>
+        <tag k="check_date:shelter" v="2025-04-07"/>
+        <tag k="highway" v="bus_stop"/>
+        <tag k="tactile_paving" v="no"/>
+      </node>
+    </new>
+  </action>
+</osm>

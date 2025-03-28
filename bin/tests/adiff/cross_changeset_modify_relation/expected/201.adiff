@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <relation id="1" version="2" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+        <bounds minlat="0.0000000" minlon="0.0000000" maxlat="0.0000000" maxlon="0.0010000"/>
+        <member type="way" ref="1" role="forward">
+          <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+          <nd ref="2" version="1" lon="0.0010000" lat="0.0000000"/>
+        </member>
+        <tag k="ref" v="42"/>
+        <tag k="route" v="bus"/>
+        <tag k="type" v="route"/>
+      </relation>
+    </old>
+    <new>
+      <relation id="1" version="3" changeset="201" timestamp="2024-02-01T00:00:05Z" uid="2" user="alice">
+        <bounds minlat="0.0000000" minlon="0.0000000" maxlat="0.0000000" maxlon="0.0010000"/>
+        <member type="way" ref="1" role="forward">
+          <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+          <nd ref="2" version="1" lon="0.0010000" lat="0.0000000"/>
+        </member>
+        <tag k="name" v="Route 42"/>
+        <tag k="ref" v="42"/>
+        <tag k="route" v="bus"/>
+        <tag k="type" v="route"/>
+      </relation>
+    </new>
+  </action>
+</osm>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <way id="1" version="3" changeset="201" timestamp="2024-02-01T00:00:05Z" uid="2" user="alice">
+        <bounds minlat="0.0000000" minlon="0.0000000" maxlat="0.0000000" maxlon="0.0010000"/>
+        <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+        <nd ref="2" version="1" lon="0.0010000" lat="0.0000000"/>
+        <tag k="highway" v="residential"/>
+        <tag k="maxspeed" v="30"/>
+        <tag k="surface" v="asphalt"/>
+      </way>
+    </old>
+    <new>
+      <way id="1" version="4" changeset="202" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+        <bounds minlat="0.0000000" minlon="0.0000000" maxlat="0.0000000" maxlon="0.0010000"/>
+        <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+        <nd ref="2" version="1" lon="0.0010000" lat="0.0000000"/>
+        <tag k="highway" v="residential"/>
+        <tag k="lit" v="yes"/>
+        <tag k="maxspeed" v="30"/>
+        <tag k="surface" v="asphalt"/>
+      </way>
+    </new>
+  </action>
+</osm>

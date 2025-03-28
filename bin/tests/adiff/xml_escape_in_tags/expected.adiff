@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="1" version="1" lon="0.0000000" lat="0.0000000" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <tag k="description" v="&lt;old&gt; &quot;quoted&quot; 'apos'"/>
+        <tag k="name" v="Café &amp; Bar"/>
+        <tag k="name:ja" v="古い名前"/>
+      </node>
+    </old>
+    <new>
+      <node id="1" version="2" lon="0.0000000" lat="0.0000000" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+        <tag k="cuisine" v="pizza 🍕"/>
+        <tag k="description" v="&lt;new&gt; &amp; improved"/>
+        <tag k="name" v="Café &amp; Restaurant"/>
+        <tag k="name:ja" v="新しい店"/>
+      </node>
+    </new>
+  </action>
+</osm>

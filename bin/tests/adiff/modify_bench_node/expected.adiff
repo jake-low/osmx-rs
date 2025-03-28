@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="1" version="1" lon="0.0000000" lat="0.0000000" changeset="1" timestamp="2024-01-01T00:00:00Z" uid="1" user="test">
+        <tag k="amenity" v="bench"/>
+      </node>
+    </old>
+    <new>
+      <node id="1" version="2" lon="1.0000000" lat="1.0000000" changeset="2" timestamp="2024-01-01T00:00:01Z" uid="1" user="test">
+        <tag k="amenity" v="bench"/>
+        <tag k="backrest" v="yes"/>
+      </node>
+    </new>
+  </action>
+</osm>

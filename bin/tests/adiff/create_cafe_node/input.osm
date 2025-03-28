@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="osmx-rs">
+  <node id="1" version="1" lat="0.0" lon="0.0" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="2" version="1" lat="0.0" lon="0.001" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="3" version="1" lat="0.001" lon="0.001" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="4" version="1" lat="0.001" lon="0.0" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+      <tag k="highway" v="junction"/>
+  </node>
+  <way id="1" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <nd ref="3"/>
+    <nd ref="4"/>
+    <tag k="highway" v="residential"/>
+  </way>
+</osm> 

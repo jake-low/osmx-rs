@@ -9,5 +9,7 @@ pub mod messages_capnp {
     include!(concat!(env!("OUT_DIR"), "/messages_capnp.rs"));
 }
 
-pub use database::{Database, Locations, Nodes, Relations, Transaction, Ways, CELL_INDEX_LEVEL};
+pub use database::{
+    Database, JoinTable, Locations, Nodes, Relations, Transaction, Ways, CELL_INDEX_LEVEL,
+};
 pub use types::{ElementId, Location, Metadata, Node, Region, Relation, RelationMember, Way};

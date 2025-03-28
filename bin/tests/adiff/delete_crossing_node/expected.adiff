@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="delete">
+    <old>
+      <node id="5" version="2" lon="0.0005000" lat="0.0005000" changeset="101" timestamp="2024-01-02T00:00:00Z" uid="2" user="anotheruser">
+        <tag k="crossing:markings" v="zebra"/>
+        <tag k="highway" v="crossing"/>
+      </node>
+    </old>
+    <new>
+      <node id="5" version="3" visible="false" lon="0.0005000" lat="0.0005000" changeset="102" timestamp="2024-01-03T00:00:00Z" uid="3" user="athirduser">
+        <tag k="crossing:markings" v="zebra"/>
+        <tag k="highway" v="crossing"/>
+      </node>
+    </new>
+  </action>
+</osm>

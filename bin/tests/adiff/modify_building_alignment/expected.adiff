@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="1" version="1" lon="0.0000000" lat="0.0000000"/>
+    </old>
+    <new>
+      <node id="1" version="2" lon="0.0001000" lat="0.0001000" changeset="101" timestamp="2024-01-02T00:00:00Z" uid="2" user="anotheruser"/>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <node id="2" version="1" lon="0.0010000" lat="0.0000000"/>
+    </old>
+    <new>
+      <node id="2" version="2" lon="0.0009000" lat="0.0001000" changeset="101" timestamp="2024-01-02T00:00:00Z" uid="2" user="anotheruser"/>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <node id="3" version="1" lon="0.0010000" lat="0.0010000"/>
+    </old>
+    <new>
+      <node id="3" version="2" lon="0.0009000" lat="0.0009000" changeset="101" timestamp="2024-01-02T00:00:00Z" uid="2" user="anotheruser"/>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <node id="4" version="1" lon="0.0000000" lat="0.0010000"/>
+    </old>
+    <new>
+      <node id="4" version="2" lon="0.0001000" lat="0.0009000" changeset="101" timestamp="2024-01-02T00:00:00Z" uid="2" user="anotheruser"/>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <way id="1" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0000000" minlon="0.0000000" maxlat="0.0010000" maxlon="0.0010000"/>
+        <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+        <nd ref="2" version="1" lon="0.0010000" lat="0.0000000"/>
+        <nd ref="3" version="1" lon="0.0010000" lat="0.0010000"/>
+        <nd ref="4" version="1" lon="0.0000000" lat="0.0010000"/>
+        <nd ref="1" version="1" lon="0.0000000" lat="0.0000000"/>
+        <tag k="building" v="yes"/>
+      </way>
+    </old>
+    <new>
+      <way id="1" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0001000" minlon="0.0001000" maxlat="0.0009000" maxlon="0.0009000"/>
+        <nd ref="1" version="2" lon="0.0001000" lat="0.0001000"/>
+        <nd ref="2" version="2" lon="0.0009000" lat="0.0001000"/>
+        <nd ref="3" version="2" lon="0.0009000" lat="0.0009000"/>
+        <nd ref="4" version="2" lon="0.0001000" lat="0.0009000"/>
+        <nd ref="1" version="2" lon="0.0001000" lat="0.0001000"/>
+        <tag k="building" v="yes"/>
+      </way>
+    </new>
+  </action>
+</osm>

@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <node id="1" version="2" lat="1.0" lon="1.0" changeset="2" timestamp="2024-01-01T00:00:01Z" uid="1" user="test">
+        <tag k="amenity" v="bench"/>
+        <tag k="backrest" v="yes"/>  
+    </node>
+  </modify>
+</osmChange> 
