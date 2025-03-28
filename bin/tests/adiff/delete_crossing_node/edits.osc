@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs">
+  <delete>
+    <node id="5" version="3" lat="0.0005" lon="0.0005" changeset="102" timestamp="2024-01-03T00:00:00Z" uid="3" user="athirduser">
+      <tag k="crossing:markings" v="zebra"/>
+      <tag k="highway" v="crossing"/>
+    </node>
+  </delete>
+</osmChange>

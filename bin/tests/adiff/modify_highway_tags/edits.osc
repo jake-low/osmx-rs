@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs">
+  <modify>
+    <way id="1" version="2" changeset="200" timestamp="2024-02-15T00:00:00Z" uid="20" user="somebodyelse">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <nd ref="3"/>
+      <nd ref="4"/>
+      <nd ref="1"/>
+      <tag k="highway" v="service"/>
+      <tag k="surface" v="asphalt"/>
+    </way>
+  </modify>
+</osmChange>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="create">
+    <node id="5" version="1" lon="0.0005000" lat="0.0005000" changeset="101" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+      <tag k="amenity" v="cafe"/>
+      <tag k="name" v="Test Cafe"/>
+      <tag k="opening_hours" v="Mo-Fr 08:00-18:00"/>
+    </node>
+  </action>
+</osm>

@@ -33,11 +33,7 @@ impl From<&osmpbf::Info<'_>> for Metadata {
             timestamp: info.milli_timestamp().map(|t| t / 1000).unwrap_or(0) as u64,
             changeset: info.changeset().unwrap_or(0) as u32,
             uid: info.uid().unwrap_or(0) as u32,
-            user: info
-                .user()
-                .and_then(|r| r.ok())
-                .unwrap_or("")
-                .to_string(),
+            user: info.user().and_then(|r| r.ok()).unwrap_or("").to_string(),
         }
     }
 }

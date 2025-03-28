@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="delete">
+    <old>
+      <node id="10" version="1" lon="0.0010000" lat="0.0010000"/>
+    </old>
+    <new>
+      <node id="10" version="2" visible="false" lon="0.0010000" lat="0.0010000" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    </new>
+  </action>
+</osm>

@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <relation id="1" version="2" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+      <member type="way" ref="1" role="forward"/>
+      <tag k="type" v="route"/>
+      <tag k="route" v="bus"/>
+      <tag k="ref" v="42"/>
+    </relation>
+  </modify>
+  <modify>
+    <relation id="1" version="3" changeset="201" timestamp="2024-02-01T00:00:05Z" uid="2" user="alice">
+      <member type="way" ref="1" role="forward"/>
+      <tag k="type" v="route"/>
+      <tag k="route" v="bus"/>
+      <tag k="ref" v="42"/>
+      <tag k="name" v="Route 42"/>
+    </relation>
+  </modify>
+  <modify>
+    <relation id="1" version="4" changeset="202" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <member type="way" ref="1" role="forward"/>
+      <tag k="type" v="route"/>
+      <tag k="route" v="bus"/>
+      <tag k="ref" v="42"/>
+      <tag k="name" v="Route 42"/>
+      <tag k="operator" v="MetroBus"/>
+    </relation>
+  </modify>
+</osmChange>

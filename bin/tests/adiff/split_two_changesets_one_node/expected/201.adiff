@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="10" version="2" lon="0.0000000" lat="0.0000000" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+        <tag k="amenity" v="bench"/>
+        <tag k="backrest" v="yes"/>
+      </node>
+    </old>
+    <new>
+      <node id="10" version="3" lon="0.0000000" lat="0.0000000" changeset="201" timestamp="2024-02-01T00:00:30Z" uid="3" user="bob">
+        <tag k="amenity" v="bench"/>
+        <tag k="backrest" v="yes"/>
+        <tag k="material" v="wood"/>
+      </node>
+    </new>
+  </action>
+</osm>

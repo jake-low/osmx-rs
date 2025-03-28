@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <create>
+    <node id="10" version="1" lat="0.0010000" lon="0.0010000" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+      <tag k="amenity" v="cafe"/>
+    </node>
+  </create>
+  <delete>
+    <node id="10" version="2" lat="0.0010000" lon="0.0010000" changeset="201" timestamp="2024-02-01T00:00:05Z" uid="3" user="bob"/>
+  </delete>
+</osmChange>

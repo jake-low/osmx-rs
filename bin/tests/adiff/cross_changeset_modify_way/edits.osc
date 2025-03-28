@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <way id="1" version="2" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <tag k="highway" v="residential"/>
+      <tag k="surface" v="asphalt"/>
+    </way>
+  </modify>
+  <modify>
+    <way id="1" version="3" changeset="201" timestamp="2024-02-01T00:00:05Z" uid="2" user="alice">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <tag k="highway" v="residential"/>
+      <tag k="surface" v="asphalt"/>
+      <tag k="maxspeed" v="30"/>
+    </way>
+  </modify>
+  <modify>
+    <way id="1" version="4" changeset="202" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <tag k="highway" v="residential"/>
+      <tag k="surface" v="asphalt"/>
+      <tag k="maxspeed" v="30"/>
+      <tag k="lit" v="yes"/>
+    </way>
+  </modify>
+</osmChange>

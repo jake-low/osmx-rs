@@ -1,0 +1,26 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osmChange version="0.6" generator="osmx-rs">
+  <create>
+    <node id="5" version="1" lat="0.0005" lon="0.0002" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    <node id="6" version="1" lat="0.0002" lon="0.0005" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    <node id="7" version="1" lat="0.0008" lon="0.0008" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+  </create>
+  <delete>
+    <node id="2" version="2" lat="0.0" lon="0.001" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+  </delete>
+  <modify>
+    <node id="1" version="2" lat="0.0001" lon="0.0001" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    <node id="3" version="2" lat="0.0009" lon="0.0009" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    <node id="4" version="2" lat="0.0009" lon="0.0001" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice"/>
+    <way id="1" version="2" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
+      <nd ref="1"/>
+      <nd ref="5"/>
+      <nd ref="6"/>
+      <nd ref="3"/>
+      <nd ref="7"/>
+      <nd ref="4"/>
+      <nd ref="1"/>
+      <tag k="landuse" v="farmland"/>
+    </way>
+  </modify>
+</osmChange>

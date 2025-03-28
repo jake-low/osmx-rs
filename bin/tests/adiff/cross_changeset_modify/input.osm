@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<osm version="0.6" generator="osmx-rs">
+  <node id="10" version="1" lat="0.0" lon="0.0" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <tag k="highway" v="bus_stop"/>
+  </node>
+</osm>
