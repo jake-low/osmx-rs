@@ -9,7 +9,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use lmdb::Transaction;
 use serde::{Deserialize, Serialize};
 
-use crate::builders::{ElementType, LocationBuilder, NodeBuilder, RelationBuilder, WayBuilder};
+use crate::builders::{
+    ElementType, LocationBuilder, Metadata, NodeBuilder, RelationBuilder, WayBuilder,
+};
 use crate::sorter::Sorter;
 
 #[derive(Parser)]
@@ -23,6 +25,34 @@ pub struct CliArgs {
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize)]
 struct IDPair(u64, u64);
+
+impl From<&osmpbf::Info<'_>> for Metadata {
+    fn from(info: &osmpbf::Info<'_>) -> Self {
+        Metadata {
+            version: info.version().unwrap_or(0) as u32,
+            timestamp: info.milli_timestamp().map(|t| t / 1000).unwrap_or(0) as u64,
+            changeset: info.changeset().unwrap_or(0) as u32,
+            uid: info.uid().unwrap_or(0) as u32,
+            user: info
+                .user()
+                .and_then(|r| r.ok())
+                .unwrap_or("")
+                .to_string(),
+        }
+    }
+}
+
+impl From<&osmpbf::DenseNodeInfo<'_>> for Metadata {
+    fn from(info: &osmpbf::DenseNodeInfo<'_>) -> Self {
+        Metadata {
+            version: info.version() as u32,
+            timestamp: (info.milli_timestamp() / 1000) as u64,
+            changeset: info.changeset() as u32,
+            uid: info.uid() as u32,
+            user: info.user().unwrap_or("").to_string(),
+        }
+    }
+}
 
 /// Reads sorted tuples from a Sorter and appends them to an LMDB table
 fn insert_sorted_tuples(
@@ -164,8 +194,12 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
             }
 
             let tags: Vec<&str> = node.tags().map(|(k, v)| [k, v]).flatten().collect();
+            let metadata = Metadata::from(&node.info());
 
-            let buf = NodeBuilder::new().set_tags(&tags[..]).build();
+            let mut builder = NodeBuilder::new();
+            builder.set_tags(&tags[..]);
+            builder.set_metadata(&metadata);
+            let buf = builder.build();
 
             txn.put(nodes, &id.to_ne_bytes(), &buf, lmdb::WriteFlags::APPEND)
                 .unwrap();
@@ -196,8 +230,12 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
             }
 
             let tags: Vec<&str> = node.tags().map(|(k, v)| [k, v]).flatten().collect();
+            let metadata = Metadata::from(node.info().unwrap());
 
-            let buf = NodeBuilder::new().set_tags(&tags[..]).build();
+            let mut builder = NodeBuilder::new();
+            builder.set_tags(&tags[..]);
+            builder.set_metadata(&metadata);
+            let buf = builder.build();
 
             txn.put(nodes, &id.to_ne_bytes(), &buf, lmdb::WriteFlags::APPEND)
                 .unwrap();
@@ -207,10 +245,13 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
             let tags: Vec<&str> = way.tags().map(|(k, v)| [k, v]).flatten().collect();
             let nodes: Vec<u64> = way.refs().map(|id| id as u64).collect();
 
+            let metadata = Metadata::from(&way.info());
+
             let mut builder = WayBuilder::new();
 
             builder.set_tags(&tags[..]);
             builder.set_nodes(&nodes[..]);
+            builder.set_metadata(&metadata);
 
             txn.put(
                 ways,
@@ -245,10 +286,13 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
                 })
                 .collect();
 
+            let metadata = Metadata::from(&rel.info());
+
             let mut builder = RelationBuilder::new();
 
             builder.set_tags(&tags[..]);
             builder.set_members(&members[..]);
+            builder.set_metadata(&metadata);
 
             txn.put(
                 relations,
