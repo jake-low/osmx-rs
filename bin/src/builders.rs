@@ -1,20 +1,3 @@
-// use std::cmp::Reverse;
-// use std::collections::{BinaryHeap, HashSet};
-// use std::error::Error;
-// use std::fs::File;
-// use std::io::{BufReader, BufWriter, Write};
-// use std::marker::PhantomData;
-// use std::path::PathBuf;
-// use std::sync::mpsc;
-// use std::thread;
-
-// use clap::Parser;
-// use genawaiter::rc::Gen;
-// use indicatif::{ProgressBar, ProgressStyle};
-// use lmdb::Transaction;
-// use serde::de::DeserializeOwned;
-// use serde::{Deserialize, Serialize};
-
 pub enum ElementType {
     Node,
     Way,
