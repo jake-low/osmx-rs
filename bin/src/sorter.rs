@@ -46,6 +46,9 @@ impl<T: Clone + Ord + Serialize + DeserializeOwned> SortWorker<T> {
     }
 
     fn flush(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.cache.is_empty() {
+            return Ok(());
+        }
         let file_path = self.tempdir.join(format!(
             "sort_{}_segment.{}.bin",
             self.name,
