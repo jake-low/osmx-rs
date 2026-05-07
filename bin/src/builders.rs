@@ -20,6 +20,22 @@ impl LocationBuilder {
     }
 }
 
+pub struct Metadata {
+    pub version: u32,
+    pub timestamp: u64,
+    pub changeset: u32,
+    pub uid: u32,
+    pub user: String,
+}
+
+fn write_metadata(mut md: osmx::messages_capnp::metadata::Builder, m: &Metadata) {
+    md.set_version(m.version);
+    md.set_timestamp(m.timestamp);
+    md.set_changeset(m.changeset);
+    md.set_uid(m.uid);
+    md.set_user(m.user.as_str());
+}
+
 pub struct NodeBuilder {
     builder: capnp::message::TypedBuilder<osmx::messages_capnp::node::Owned>,
 }
@@ -35,6 +51,12 @@ impl NodeBuilder {
     pub fn set_tags(&mut self, tags: &[&str]) -> &Self {
         let mut root = self.builder.get_root().unwrap();
         root.set_tags(tags).unwrap();
+        self
+    }
+
+    pub fn set_metadata(&mut self, m: &Metadata) -> &Self {
+        let root = self.builder.get_root().unwrap();
+        write_metadata(root.init_metadata(), m);
         self
     }
 
@@ -66,6 +88,12 @@ impl WayBuilder {
     pub fn set_nodes(&mut self, nodes: &[u64]) -> &Self {
         let mut root = self.builder.get_root().unwrap();
         root.set_nodes(nodes).unwrap();
+        self
+    }
+
+    pub fn set_metadata(&mut self, m: &Metadata) -> &Self {
+        let root = self.builder.get_root().unwrap();
+        write_metadata(root.init_metadata(), m);
         self
     }
 
@@ -116,6 +144,12 @@ impl RelationBuilder {
             mbuilder.set_role(member.2.as_str());
         }
 
+        self
+    }
+
+    pub fn set_metadata(&mut self, m: &Metadata) -> &Self {
+        let root = self.builder.get_root().unwrap();
+        write_metadata(root.init_metadata(), m);
         self
     }
 
