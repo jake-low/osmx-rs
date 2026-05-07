@@ -26,14 +26,14 @@ pub struct NodeBuilder {
 
 impl NodeBuilder {
     pub fn new() -> Self {
-        Self {
-            builder: capnp::message::TypedBuilder::<osmx::messages_capnp::node::Owned>::new_default(
-            ),
-        }
+        let mut builder =
+            capnp::message::TypedBuilder::<osmx::messages_capnp::node::Owned>::new_default();
+        builder.init_root();
+        Self { builder }
     }
 
     pub fn set_tags(&mut self, tags: &[&str]) -> &Self {
-        let mut root = self.builder.init_root();
+        let mut root = self.builder.get_root().unwrap();
         root.set_tags(tags).unwrap();
         self
     }
@@ -51,20 +51,20 @@ pub struct WayBuilder {
 
 impl WayBuilder {
     pub fn new() -> Self {
-        Self {
-            builder: capnp::message::TypedBuilder::<osmx::messages_capnp::way::Owned>::new_default(
-            ),
-        }
+        let mut builder =
+            capnp::message::TypedBuilder::<osmx::messages_capnp::way::Owned>::new_default();
+        builder.init_root();
+        Self { builder }
     }
 
     pub fn set_tags(&mut self, tags: &[&str]) -> &Self {
-        let mut root = self.builder.init_root();
+        let mut root = self.builder.get_root().unwrap();
         root.set_tags(tags).unwrap();
         self
     }
 
     pub fn set_nodes(&mut self, nodes: &[u64]) -> &Self {
-        let mut root = self.builder.init_root();
+        let mut root = self.builder.get_root().unwrap();
         root.set_nodes(nodes).unwrap();
         self
     }
@@ -82,14 +82,14 @@ pub struct RelationBuilder {
 
 impl RelationBuilder {
     pub fn new() -> Self {
-        Self {
-            builder:
-                capnp::message::TypedBuilder::<osmx::messages_capnp::relation::Owned>::new_default(),
-        }
+        let mut builder =
+            capnp::message::TypedBuilder::<osmx::messages_capnp::relation::Owned>::new_default();
+        builder.init_root();
+        Self { builder }
     }
 
     pub fn set_tags(&mut self, tags: &[&str]) -> &Self {
-        let mut root = self.builder.init_root();
+        let mut root = self.builder.get_root().unwrap();
         root.set_tags(tags).unwrap();
         self
     }
