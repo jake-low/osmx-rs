@@ -13,8 +13,8 @@ pub struct LocationBuilder {
 impl LocationBuilder {
     pub fn build(&self) -> Vec<u8> {
         let mut buf = vec![];
-        buf.extend(((self.longitude / 1e7).round() as i32).to_le_bytes());
-        buf.extend(((self.latitude / 1e7).round() as i32).to_le_bytes());
+        buf.extend(((self.longitude * 1e7).round() as i32).to_le_bytes());
+        buf.extend(((self.latitude * 1e7).round() as i32).to_le_bytes());
         buf.extend(self.version.to_le_bytes());
         buf
     }
