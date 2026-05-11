@@ -1,11 +1,11 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version="1.0" encoding="UTF-8"?>
 <osmChange version="0.6" generator="osmx-rs test">
   <modify>
     <node id="1" version="2" lat="0.0" lon="0.0" changeset="200" timestamp="2024-02-01T00:00:00Z" uid="2" user="alice">
-      <tag k="name" v="Caf&#233; &amp; Restaurant"/>
+      <tag k="name" v="Café &amp; Restaurant"/>
       <tag k="description" v="&lt;new&gt; &amp; improved"/>
-      <tag k="name:ja" v="&#26032;&#12375;&#12356;&#24215;"/>
-      <tag k="cuisine" v="pizza &#127829;"/>
+      <tag k="name:ja" v="新しい店"/>
+      <tag k="cuisine" v="pizza 🍕"/>
     </node>
   </modify>
 </osmChange>

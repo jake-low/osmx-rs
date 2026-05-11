@@ -1,8 +1,8 @@
-<?xml version='1.0' encoding='UTF-8'?>
+<?xml version="1.0" encoding="UTF-8"?>
 <osm version="0.6" generator="osmx-rs">
   <node id="1" version="1" lat="0.0" lon="0.0" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
-    <tag k="name" v="Caf&#233; &amp; Bar"/>
+    <tag k="name" v="Café &amp; Bar"/>
     <tag k="description" v="&lt;old&gt; &quot;quoted&quot; 'apos'"/>
-    <tag k="name:ja" v="&#21476;&#12356;&#21517;&#21069;"/>
+    <tag k="name:ja" v="古い名前"/>
   </node>
 </osm>
