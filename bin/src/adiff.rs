@@ -464,7 +464,14 @@ impl<'txn> Snapshot<'txn> {
         member_id: ElementId,
         role: String,
     ) -> AugmentedMember {
-        match self.get_augmented_element(member_id) {
+        // For sub-relation members, don't recursively augment: relation graphs
+        // in OSM can be deep or (in rare cases) cyclic, so recursing could
+        // exhaust the stack.
+        let element = match member_id {
+            ElementId::Relation(rid) => self.get_relation_stub(rid),
+            _ => self.get_augmented_element(member_id),
+        };
+        match element {
             Some(element) => AugmentedMember::Resolved {
                 id: member_id,
                 role,
@@ -481,6 +488,42 @@ impl<'txn> Snapshot<'txn> {
                 }
             }
         }
+    }
+
+    /// Build an AugmentedElement::Relation without resolving its members.
+    fn get_relation_stub(&self, id: u64) -> Option<AugmentedElement> {
+        if let Some(Element::Relation(relation)) = self.elements.get(&ElementId::Relation(id)) {
+            return Some(AugmentedElement::Relation(AugmentedRelation {
+                id: relation.id,
+                version: relation.version,
+                visible: relation.visible,
+                metadata: relation.metadata.clone(),
+                members: Vec::new(),
+                tags: relation.tags.clone(),
+            }));
+        }
+        let relation = self.relations.get(id)?;
+        let metadata = Some(Metadata {
+            changeset: relation.metadata().changeset() as u64,
+            timestamp: Utc
+                .timestamp_opt(relation.metadata().timestamp() as i64, 0)
+                .single()
+                .expect("invalid timestamp"),
+            uid: relation.metadata().uid(),
+            user: relation.metadata().user().to_string(),
+        });
+        let tags = relation
+            .tags()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        Some(AugmentedElement::Relation(AugmentedRelation {
+            id,
+            version: relation.metadata().version(),
+            visible: true,
+            metadata,
+            members: Vec::new(),
+            tags,
+        }))
     }
 }
 
