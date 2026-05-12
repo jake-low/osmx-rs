@@ -14,12 +14,12 @@ This crate supports reading from `.osmx` database files, including:
 - fetching nodes, ways and relations by ID
 - reading an element's tags
 - getting a node's location, a way's nodes, or a relation's members
+- reading element metadata (e.g. the version number of an element or the changeset and user that most recently modified it)
 - finding nodes in a region using the spatial index
 - getting reverse relationships (finding all ways that a node is part of, or all relations that an element is a member of)
 
 It does _not_ yet support:
-- reading element metadata (e.g. the version number of an element or the changeset and user that most recently modified it)
-- writing data to an `.osmx` database, or creating a new `.osmx` database
+- writing data to an `.osmx` database, or creating a new `.osmx` database (except through the `osmx-rs` CLI's `expand` subcommand)
 
 Pull requests for these missing features are welcome.
 
@@ -38,6 +38,7 @@ Usage: `osmx-rs [COMMAND] [ARGS...]`
 Commands:
 - `expand`: convert an OSM PBF file to an OSMX database
 - `stat`: print statistics about the contents of an OSMX database
+- `augmented-diff`: generate an [Augmented Diff](https://wiki.openstreetmap.org/wiki/Overpass_API/Augmented_Diffs) file from an OSMX database and an OsmChange (.osc) file
 
 The command is intended to be useful tool, but also to be an illustrative example of how to use the `osmx-rs` crate to create and interact with `.osmx` files. The source code can be found in the `bin/` directory.
 
