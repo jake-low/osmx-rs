@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-05-12
+
+## Added
+
+- `osmx-rs augmented-diff` subcommand to compute an XML Augmented Diff, given an OSMX database and `.osc` change file.
+- support for reading element metadata
+
+## Fixed
+
+- `osmx-rs expand` subcommand flush() will no longer crash if there's nothing to flush
+- `osmx-rs expand` coordinates are now converted to OSMX internal representation correctly
+- fixed a bug in `builders::WayBuilder` that caused `osmx-rs expand` to discard tags from ways
+
 ## [0.2.0] - 2024-08-13
 
 ### Added
@@ -27,6 +40,6 @@ Does not yet support:
 
 
 
-[unreleased]: https://github.com/jake-low/osmx-rs/compare/v1.1.1...HEAD
+[0.3.0]: https://github.com/jake-low/osmx-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jake-low/osmx-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jake-low/osmx-rs/releases/tag/v0.1.0
