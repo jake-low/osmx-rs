@@ -1,13 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 
-use anyhow::anyhow;
 use chrono::{DateTime, SecondsFormat, TimeZone, Utc};
 use libxml::parser::Parser;
-use libxml::tree::SaveOptions;
-use libxml::tree::{Document, Node as XmlNode};
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 enum ElementId {
@@ -145,14 +142,6 @@ enum AugmentedElement {
 }
 
 impl AugmentedElement {
-    fn id(&self) -> ElementId {
-        match self {
-            AugmentedElement::Node(node) => ElementId::Node(node.id),
-            AugmentedElement::Way(way) => ElementId::Way(way.id),
-            AugmentedElement::Relation(relation) => ElementId::Relation(relation.id),
-        }
-    }
-
     fn visible(&self) -> bool {
         match self {
             AugmentedElement::Node(node) => node.visible,
@@ -168,20 +157,6 @@ enum Action {
     Delete(AugmentedElement, AugmentedElement),
 }
 
-impl Action {
-    fn primary(&self) -> &AugmentedElement {
-        match self {
-            Action::Create(e) => e,
-            Action::Modify(_, new) => new,
-            Action::Delete(_, new) => new,
-        }
-    }
-}
-
-struct Diff {
-    actions: Vec<Action>,
-}
-
 struct DiffBuilder<'txn> {
     elements: BTreeSet<ElementId>,
     before: Option<Snapshot<'txn>>,
@@ -189,64 +164,71 @@ struct DiffBuilder<'txn> {
 }
 
 impl<'txn> DiffBuilder<'txn> {
-    fn build(&self) -> Diff {
-        let mut actions: Vec<Action> = Vec::new();
+    /// Builds the action for one element, or None if the element produces no
+    /// action in this diff.
+    fn action(&self, after: &Snapshot<'txn>, element_id: ElementId) -> Option<Action> {
         let before = self.before.as_ref().unwrap();
-        let Some(after) = self.after.as_ref() else {
-            // if after is None, it means the .osc file was empty, so
-            // we return an empty diff
-            return Diff { actions };
-        };
+        let old = before.get_augmented_element(element_id);
+        let new = after.get_augmented_element(element_id);
 
-        for element_id in self.elements.iter() {
-            let old = before.get_augmented_element(*element_id);
-            let new = after.get_augmented_element(*element_id);
+        match (old, new) {
+            (Some(old), Some(new)) => {
+                if new.visible() {
+                    Some(Action::Modify(old, new))
+                } else {
+                    Some(Action::Delete(old, new))
+                }
+            }
+            (Some(_old), None) => {
+                // valid actions should always have a 'new' side (even deletes; the new
+                // version has visible=false and has the changeset, user, timestamp etc.
+                // that deleted the element)
+                panic!("invalid delete (no new side) for {:?}", element_id);
+            }
+            (None, Some(new)) => {
+                if !new.visible() {
+                    // Element was created and then deleted within this diff window,
+                    // so we don't emit any action
+                    return None;
+                }
+                Some(Action::Create(new))
+            }
+            (None, None) => None,
+        }
+    }
 
-            let action = match (old, new) {
-                (Some(old), Some(new)) => {
-                    if new.visible() {
-                        Action::Modify(old, new)
-                    } else {
-                        Action::Delete(old, new)
-                    }
-                }
-                (Some(_old), None) => {
-                    // valid actions should always have a 'new' side (even deletes; the new
-                    // version has visible=false and has the changeset, user, timestamp etc.
-                    // that deleted the element)
-                    panic!("invalid delete (no new side) for {:?}", element_id);
-                }
-                (None, Some(new)) => {
-                    if !new.visible() {
-                        // Element was created and then deleted within this diff window,
-                        // so we don't emit any action
-                        continue;
-                    }
-                    Action::Create(new)
-                }
-                (None, None) => {
+    /// Writes the diff as augmented diff XML. Each action is built, written
+    /// and dropped before the next one, because a diff that touches many large
+    /// relations does not fit in memory as a whole.
+    ///
+    /// Actions come out sorted by element type (nodes, ways, relations) and then
+    /// by id, which is the iteration order of `BTreeSet<ElementId>`.
+    fn write<W: Write>(&self, out: &mut W) -> std::io::Result<()> {
+        out.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
+
+        // The root's open tag is written with the first action, so that a diff
+        // with no actions gets a self-closing root. `after` is None when the
+        // .osc file was empty.
+        let mut is_empty = true;
+        if let Some(after) = self.after.as_ref() {
+            for element_id in self.elements.iter() {
+                let Some(action) = self.action(after, *element_id) else {
                     continue;
+                };
+                if is_empty {
+                    out.write_all(b"<osm version=\"0.6\" generator=\"osmx-rs\">\n")?;
+                    is_empty = false;
                 }
-            };
-
-            actions.push(action);
+                write_action(out, &action)?;
+            }
         }
 
-        sort_actions(&mut actions);
-        Diff { actions }
+        if is_empty {
+            out.write_all(b"<osm version=\"0.6\" generator=\"osmx-rs\"/>\n")
+        } else {
+            out.write_all(b"</osm>\n")
+        }
     }
-}
-
-fn sort_actions(actions: &mut [Action]) {
-    actions.sort_by_key(|a| {
-        let id = a.primary().id();
-        let (kind, n) = match id {
-            ElementId::Node(n) => (0u8, n),
-            ElementId::Way(n) => (1u8, n),
-            ElementId::Relation(n) => (2u8, n),
-        };
-        (kind, n)
-    });
 }
 
 struct Snapshot<'txn> {
@@ -804,230 +786,253 @@ pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
 
         for (id, diff_builder) in diff_builders.iter() {
             let output_filename = args.output_path.join(format!("{}.adiff", id));
-            let mut output_file = std::fs::File::create(output_filename)?;
-            let diff = diff_builder.build();
-            write!(&mut output_file, "{}", adiff_to_string(&diff)?)?;
+            write_adiff_file(&output_filename, diff_builder)?;
         }
     } else {
-        let mut output_file = std::fs::File::create(&args.output_path)?;
-        let diff = diff_builders.get(&0).unwrap().build();
-        write!(&mut output_file, "{}", adiff_to_string(&diff)?)?;
+        write_adiff_file(&args.output_path, diff_builders.get(&0).unwrap())?;
     }
 
     Ok(())
 }
 
-fn new_xml_node(name: &str, doc: &Document) -> anyhow::Result<XmlNode> {
-    XmlNode::new(name, None, doc).map_err(|()| anyhow!("failed to create XML node `{name}`"))
+fn write_adiff_file(path: &Path, diff_builder: &DiffBuilder) -> std::io::Result<()> {
+    let mut out = BufWriter::new(std::fs::File::create(path)?);
+    diff_builder.write(&mut out)?;
+    out.flush()
 }
 
-trait XmlNodeExt {
-    fn set_attr(&mut self, name: &str, value: &str) -> anyhow::Result<()>;
-    fn set_text(&mut self, content: &str) -> anyhow::Result<()>;
-    fn append(&mut self, child: &mut XmlNode) -> anyhow::Result<()>;
+// The adiff is written straight to the output as text instead of building an
+// XML document in memory first. The layout (two-space indent, self-closing
+// empty elements) matches what libxml2 produced before.
+
+fn write_action<W: Write>(out: &mut W, action: &Action) -> std::io::Result<()> {
+    match action {
+        Action::Create(element) => {
+            out.write_all(b"  <action type=\"create\">\n")?;
+            write_element(out, element, 4)?;
+        }
+        Action::Modify(old, new) | Action::Delete(old, new) => {
+            let action_type = match action {
+                Action::Delete(..) => "delete",
+                _ => "modify",
+            };
+            writeln!(out, "  <action type=\"{action_type}\">")?;
+            out.write_all(b"    <old>\n")?;
+            write_element(out, old, 6)?;
+            out.write_all(b"    </old>\n")?;
+            out.write_all(b"    <new>\n")?;
+            write_element(out, new, 6)?;
+            out.write_all(b"    </new>\n")?;
+        }
+    }
+    out.write_all(b"  </action>\n")
 }
 
-impl XmlNodeExt for XmlNode {
-    fn set_attr(&mut self, name: &str, value: &str) -> anyhow::Result<()> {
-        self.set_attribute(name, value).map_err(anyhow::Error::msg)
-    }
-    fn set_text(&mut self, content: &str) -> anyhow::Result<()> {
-        self.set_content(content).map_err(anyhow::Error::msg)
-    }
-    fn append(&mut self, child: &mut XmlNode) -> anyhow::Result<()> {
-        self.add_child(child).map_err(anyhow::Error::msg)
-    }
+fn write_indent<W: Write>(out: &mut W, indent: usize) -> std::io::Result<()> {
+    write!(out, "{:indent$}", "")
 }
 
-fn add_tags<'a>(
-    doc: &Document,
-    element: &mut XmlNode,
-    tags: impl Iterator<Item = (&'a String, &'a String)>,
-) -> anyhow::Result<()> {
-    for kv in tags {
-        add_tag(doc, element, kv)?;
+/// Writes ` name="value"`, escaping the value the way libxml2 does.
+fn write_attr<W: Write>(out: &mut W, name: &str, value: &str) -> std::io::Result<()> {
+    write!(out, " {name}=\"")?;
+    let mut rest = value;
+    while let Some(i) = rest.find(['<', '>', '&', '"', '\n', '\r', '\t']) {
+        out.write_all(rest[..i].as_bytes())?;
+        let escaped = match rest.as_bytes()[i] {
+            b'<' => "&lt;",
+            b'>' => "&gt;",
+            b'&' => "&amp;",
+            b'"' => "&quot;",
+            b'\n' => "&#10;",
+            b'\r' => "&#13;",
+            _ => "&#9;",
+        };
+        out.write_all(escaped.as_bytes())?;
+        rest = &rest[i + 1..];
+    }
+    out.write_all(rest.as_bytes())?;
+    out.write_all(b"\"")
+}
+
+/// Writes the attributes shared by every element's open tag. Nodes also carry
+/// `lon` and `lat`, which go between `visible` and the metadata.
+fn write_common_attrs<W: Write>(
+    out: &mut W,
+    id: u64,
+    version: u32,
+    visible: bool,
+    lonlat: Option<(f64, f64)>,
+    metadata: &Option<Metadata>,
+) -> std::io::Result<()> {
+    write!(out, " id=\"{id}\" version=\"{version}\"")?;
+    if !visible {
+        out.write_all(b" visible=\"false\"")?;
+    }
+    if let Some((lon, lat)) = lonlat {
+        write!(out, " lon=\"{lon:.7}\" lat=\"{lat:.7}\"")?;
+    }
+    if let Some(metadata) = metadata {
+        write!(
+            out,
+            " changeset=\"{}\" timestamp=\"{}\" uid=\"{}\"",
+            metadata.changeset,
+            metadata
+                .timestamp
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            metadata.uid
+        )?;
+        write_attr(out, "user", &metadata.user)?;
     }
     Ok(())
 }
 
-fn add_tag(doc: &Document, element: &mut XmlNode, kv: (&String, &String)) -> anyhow::Result<()> {
-    let mut tag = new_xml_node("tag", doc)?;
-    tag.set_attr("k", kv.0)?;
-    tag.set_attr("v", kv.1)?;
-    element.append(&mut tag)
-}
-
-fn add_metadata(element: &mut XmlNode, metadata: &Metadata) -> anyhow::Result<()> {
-    element.set_attr("changeset", &metadata.changeset.to_string())?;
-    element.set_attr(
-        "timestamp",
-        &metadata
-            .timestamp
-            .to_rfc3339_opts(SecondsFormat::Secs, true),
-    )?;
-    element.set_attr("uid", &metadata.uid.to_string())?;
-    element.set_attr("user", &metadata.user)?;
+fn write_tags<W: Write>(out: &mut W, tags: &Tags, indent: usize) -> std::io::Result<()> {
+    for (k, v) in tags {
+        write_indent(out, indent)?;
+        out.write_all(b"<tag")?;
+        write_attr(out, "k", k)?;
+        write_attr(out, "v", v)?;
+        out.write_all(b"/>\n")?;
+    }
     Ok(())
 }
 
-fn add_nds(doc: &Document, element: &mut XmlNode, nodes: &[WayNode]) -> anyhow::Result<()> {
+fn write_nds<W: Write>(out: &mut W, nodes: &[WayNode], indent: usize) -> std::io::Result<()> {
     for n in nodes {
-        let mut nd = new_xml_node("nd", doc)?;
+        write_indent(out, indent)?;
         match n {
-            WayNode::Resolved(node) => {
-                nd.set_attr("ref", &node.id.to_string())?;
-                nd.set_attr("version", &node.version.to_string())?;
-                nd.set_attr("lon", &format!("{:.7}", node.lon))?;
-                nd.set_attr("lat", &format!("{:.7}", node.lat))?;
-            }
-            WayNode::Dangling { id } => {
-                nd.set_attr("ref", &id.to_string())?;
-            }
+            WayNode::Resolved(node) => writeln!(
+                out,
+                "<nd ref=\"{}\" version=\"{}\" lon=\"{:.7}\" lat=\"{:.7}\"/>",
+                node.id, node.version, node.lon, node.lat
+            )?,
+            WayNode::Dangling { id } => writeln!(out, "<nd ref=\"{id}\"/>")?,
         }
-        element.append(&mut nd)?;
     }
     Ok(())
 }
 
-fn adiff_to_string(diff: &Diff) -> anyhow::Result<String> {
-    let mut adiff = Document::new().map_err(|()| anyhow!("failed to create XML document"))?;
-    let mut root = new_xml_node("osm", &adiff)?;
-    root.set_attr("version", "0.6")?;
-    root.set_attr("generator", "osmx-rs")?;
-    adiff.set_root_element(&root);
-
-    for action in &diff.actions {
-        let mut action_element = new_xml_node("action", &adiff)?;
-        match action {
-            Action::Create(element) => {
-                action_element.set_attr("type", "create")?;
-                action_element.append(&mut element_to_xml(&adiff, element)?)?;
-            }
-            Action::Modify(old_element, new_element) => {
-                action_element.set_attr("type", "modify")?;
-
-                let mut old = new_xml_node("old", &adiff)?;
-                let mut new = new_xml_node("new", &adiff)?;
-                old.append(&mut element_to_xml(&adiff, old_element)?)?;
-                new.append(&mut element_to_xml(&adiff, new_element)?)?;
-                action_element.append(&mut old)?;
-                action_element.append(&mut new)?;
-            }
-            Action::Delete(old_element, new_element) => {
-                action_element.set_attr("type", "delete")?;
-                let mut old = new_xml_node("old", &adiff)?;
-                let mut new = new_xml_node("new", &adiff)?;
-                old.append(&mut element_to_xml(&adiff, old_element)?)?;
-                new.append(&mut element_to_xml(&adiff, new_element)?)?;
-                action_element.append(&mut old)?;
-                action_element.append(&mut new)?;
-            }
-        }
-        root.append(&mut action_element)?;
-    }
-
-    let options = SaveOptions {
-        format: true,
-        non_significant_whitespace: true,
-        ..Default::default()
-    };
-
-    Ok(adiff.to_string_with_options(options))
+fn write_bounds<W: Write>(out: &mut W, b: &Bounds, indent: usize) -> std::io::Result<()> {
+    write_indent(out, indent)?;
+    writeln!(
+        out,
+        "<bounds minlat=\"{:.7}\" minlon=\"{:.7}\" maxlat=\"{:.7}\" maxlon=\"{:.7}\"/>",
+        b.minlat, b.minlon, b.maxlat, b.maxlon
+    )
 }
 
-fn element_to_xml(doc: &Document, element: &AugmentedElement) -> anyhow::Result<XmlNode> {
+/// Ends an open tag and reports whether a close tag must follow: an element
+/// with no children is self-closing.
+fn finish_open_tag<W: Write>(out: &mut W, has_children: bool) -> std::io::Result<bool> {
+    let end = if has_children { ">\n" } else { "/>\n" };
+    out.write_all(end.as_bytes())?;
+    Ok(has_children)
+}
+
+fn write_close_tag<W: Write>(out: &mut W, name: &str, indent: usize) -> std::io::Result<()> {
+    write_indent(out, indent)?;
+    writeln!(out, "</{name}>")
+}
+
+fn write_element<W: Write>(
+    out: &mut W,
+    element: &AugmentedElement,
+    indent: usize,
+) -> std::io::Result<()> {
+    let child_indent = indent + 2;
+    write_indent(out, indent)?;
+
     match element {
         AugmentedElement::Node(node) => {
-            let mut xml_node = new_xml_node("node", doc)?;
-            xml_node.set_attr("id", &format!("{}", node.id))?;
-            xml_node.set_attr("version", &format!("{}", node.version))?;
-
-            if !node.visible {
-                xml_node.set_attr("visible", "false")?;
+            out.write_all(b"<node")?;
+            write_common_attrs(
+                out,
+                node.id,
+                node.version,
+                node.visible,
+                Some((node.lon, node.lat)),
+                &node.metadata,
+            )?;
+            if finish_open_tag(out, !node.tags.is_empty())? {
+                write_tags(out, &node.tags, child_indent)?;
+                write_close_tag(out, "node", indent)?;
             }
-
-            xml_node.set_attr("lon", &format!("{:.7}", node.lon))?;
-            xml_node.set_attr("lat", &format!("{:.7}", node.lat))?;
-
-            if let Some(metadata) = &node.metadata {
-                add_metadata(&mut xml_node, metadata)?;
-            }
-
-            add_tags(doc, &mut xml_node, node.tags.iter())?;
-
-            Ok(xml_node)
         }
         AugmentedElement::Way(way) => {
-            let mut xml_node = new_xml_node("way", doc)?;
-            xml_node.set_attr("id", &format!("{}", way.id))?;
-            xml_node.set_attr("version", &format!("{}", way.version))?;
-
-            if !way.visible {
-                xml_node.set_attr("visible", "false")?;
+            out.write_all(b"<way")?;
+            write_common_attrs(out, way.id, way.version, way.visible, None, &way.metadata)?;
+            let bounds = bounds_for(element);
+            let has_children = bounds.is_some() || !way.nodes.is_empty() || !way.tags.is_empty();
+            if finish_open_tag(out, has_children)? {
+                if let Some(b) = &bounds {
+                    write_bounds(out, b, child_indent)?;
+                }
+                write_nds(out, &way.nodes, child_indent)?;
+                write_tags(out, &way.tags, child_indent)?;
+                write_close_tag(out, "way", indent)?;
             }
-
-            if let Some(metadata) = &way.metadata {
-                add_metadata(&mut xml_node, metadata)?;
-            }
-
-            if let Some(b) = bounds_for(element) {
-                add_bounds(doc, &mut xml_node, &b)?;
-            }
-            add_nds(doc, &mut xml_node, &way.nodes)?;
-            add_tags(doc, &mut xml_node, way.tags.iter())?;
-
-            Ok(xml_node)
         }
         AugmentedElement::Relation(relation) => {
-            let mut xml_node = new_xml_node("relation", doc)?;
-            xml_node.set_attr("id", &format!("{}", relation.id))?;
-            xml_node.set_attr("version", &format!("{}", relation.version))?;
-
-            if !relation.visible {
-                xml_node.set_attr("visible", "false")?;
-            }
-
-            if let Some(metadata) = &relation.metadata {
-                add_metadata(&mut xml_node, metadata)?;
-            }
-
-            if let Some(b) = bounds_for(element) {
-                add_bounds(doc, &mut xml_node, &b)?;
-            }
-            for member in &relation.members {
-                let mut m = new_xml_node("member", doc)?;
-                let (type_str, ref_str) = match member.id() {
-                    ElementId::Node(id) => ("node", id.to_string()),
-                    ElementId::Way(id) => ("way", id.to_string()),
-                    ElementId::Relation(id) => ("relation", id.to_string()),
-                };
-                m.set_attr("type", type_str)?;
-                m.set_attr("ref", &ref_str)?;
-                m.set_attr("role", member.role())?;
-
-                if let AugmentedMember::Resolved { element, .. } = member {
-                    match &**element {
-                        AugmentedElement::Node(node) => {
-                            m.set_attr("lat", &format!("{:.7}", node.lat))?;
-                            m.set_attr("lon", &format!("{:.7}", node.lon))?;
-                        }
-                        AugmentedElement::Way(way) => {
-                            add_nds(doc, &mut m, &way.nodes)?;
-                        }
-                        AugmentedElement::Relation(_) => {
-                            // TODO: should sub-relation members be recursively augmented?
-                            // For now, they are not.
-                        }
-                    }
+            out.write_all(b"<relation")?;
+            write_common_attrs(
+                out,
+                relation.id,
+                relation.version,
+                relation.visible,
+                None,
+                &relation.metadata,
+            )?;
+            let bounds = bounds_for(element);
+            let has_children =
+                bounds.is_some() || !relation.members.is_empty() || !relation.tags.is_empty();
+            if finish_open_tag(out, has_children)? {
+                if let Some(b) = &bounds {
+                    write_bounds(out, b, child_indent)?;
                 }
-
-                xml_node.append(&mut m)?;
+                for member in &relation.members {
+                    write_member(out, member, child_indent)?;
+                }
+                write_tags(out, &relation.tags, child_indent)?;
+                write_close_tag(out, "relation", indent)?;
             }
-            add_tags(doc, &mut xml_node, relation.tags.iter())?;
-
-            Ok(xml_node)
         }
     }
+    Ok(())
+}
+
+fn write_member<W: Write>(
+    out: &mut W,
+    member: &AugmentedMember,
+    indent: usize,
+) -> std::io::Result<()> {
+    let (type_str, ref_id) = match member.id() {
+        ElementId::Node(id) => ("node", id),
+        ElementId::Way(id) => ("way", id),
+        ElementId::Relation(id) => ("relation", id),
+    };
+    write_indent(out, indent)?;
+    write!(out, "<member type=\"{type_str}\" ref=\"{ref_id}\"")?;
+    write_attr(out, "role", member.role())?;
+
+    let mut way_nodes: &[WayNode] = &[];
+    if let AugmentedMember::Resolved { element, .. } = member {
+        match &**element {
+            AugmentedElement::Node(node) => {
+                write!(out, " lat=\"{:.7}\" lon=\"{:.7}\"", node.lat, node.lon)?;
+            }
+            AugmentedElement::Way(way) => way_nodes = way.nodes.as_slice(),
+            AugmentedElement::Relation(_) => {
+                // TODO: should sub-relation members be recursively augmented?
+                // For now, they are not.
+            }
+        }
+    }
+
+    if finish_open_tag(out, !way_nodes.is_empty())? {
+        write_nds(out, way_nodes, indent + 2)?;
+        write_close_tag(out, "member", indent)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1036,15 +1041,6 @@ struct Bounds {
     minlon: f64,
     maxlat: f64,
     maxlon: f64,
-}
-
-fn add_bounds(doc: &Document, parent: &mut XmlNode, b: &Bounds) -> anyhow::Result<()> {
-    let mut bounds = new_xml_node("bounds", doc)?;
-    bounds.set_attr("minlat", &format!("{:.7}", b.minlat))?;
-    bounds.set_attr("minlon", &format!("{:.7}", b.minlon))?;
-    bounds.set_attr("maxlat", &format!("{:.7}", b.maxlat))?;
-    bounds.set_attr("maxlon", &format!("{:.7}", b.maxlon))?;
-    parent.append(&mut bounds)
 }
 
 fn collect_coords(element: &AugmentedElement, out: &mut Vec<(f64, f64)>) {
