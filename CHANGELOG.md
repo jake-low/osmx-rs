@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## Fixed
+
+- `Way::is_closed()` no longer returns `true` for a way with zero nodes
+
 ## [0.3.0] - 2026-05-12
 
 ## Added

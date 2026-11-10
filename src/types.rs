@@ -121,12 +121,15 @@ impl<'a> Way<'a> {
     }
 
     /// Returns if the way is a closed ring (i.e. its first and last node have the same ID)
+    ///
+    /// Ways with fewer than two nodes are never considered closed.
     pub fn is_closed(&self) -> bool {
-        // TODO: haven't considered if this is correct when way contains zero or one nodes
         let mut nodes = self.nodes();
-        let first = nodes.next();
-        let last = nodes.last();
-        first == last
+        match (nodes.next(), nodes.last()) {
+            (Some(first), Some(last)) => first == last,
+            // zero nodes: (None, None); one node: (Some, None)
+            _ => false,
+        }
     }
 
     /// Returns [Metadata] about this Way (its current version and the changeset
@@ -281,3 +284,43 @@ impl Region {
 }
 
 // pub struct Tag<'a>(&'a str, &'a str);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn way_bytes(nodes: &[u64]) -> Vec<u8> {
+        let mut message = capnp::message::Builder::new_default();
+        let mut way = message.init_root::<messages_capnp::way::Builder>();
+        let mut list = way.reborrow().init_nodes(nodes.len() as u32);
+        for (i, id) in nodes.iter().enumerate() {
+            list.set(i as u32, *id);
+        }
+        capnp::serialize::write_message_segments_to_words(&message)
+    }
+
+    fn is_closed(nodes: &[u64]) -> bool {
+        let bytes = way_bytes(nodes);
+        Way::try_from(bytes.as_slice()).unwrap().is_closed()
+    }
+
+    #[test]
+    fn empty_way_is_not_closed() {
+        assert!(!is_closed(&[]));
+    }
+
+    #[test]
+    fn single_node_way_is_not_closed() {
+        assert!(!is_closed(&[1]));
+    }
+
+    #[test]
+    fn open_way_is_not_closed() {
+        assert!(!is_closed(&[1, 2, 3]));
+    }
+
+    #[test]
+    fn ring_is_closed() {
+        assert!(is_closed(&[1, 2, 3, 1]));
+    }
+}
