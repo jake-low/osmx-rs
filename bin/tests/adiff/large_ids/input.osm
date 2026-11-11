@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs test">
+  <node id="13000000001" version="1" lat="0.0" lon="0.001" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="13000000002" version="1" lat="0.0" lon="0.002" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <way id="5000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <nd ref="13000000001"/>
+    <nd ref="13000000002"/>
+    <tag k="highway" v="path"/>
+  </way>
+  <relation id="20000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <member type="way" ref="5000000001" role=""/>
+    <tag k="type" v="route"/>
+  </relation>
+</osm>

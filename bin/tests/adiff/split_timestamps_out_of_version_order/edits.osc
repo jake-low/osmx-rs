@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <node id="1" version="2" lat="0.0001" lon="0.001" changeset="201" timestamp="2024-02-01T00:00:20Z" uid="3" user="bob"/>
+    <node id="1" version="3" lat="0.0002" lon="0.001" changeset="200" timestamp="2024-02-01T00:00:05Z" uid="2" user="alice"/>
+  </modify>
+</osmChange>

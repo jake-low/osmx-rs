@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -74,6 +74,25 @@ enum Element {
     Node(Node),
     Way(Way),
     Relation(Relation),
+}
+
+impl Element {
+    fn version(&self) -> u32 {
+        match self {
+            Element::Node(node) => node.version,
+            Element::Way(way) => way.version,
+            Element::Relation(relation) => relation.version,
+        }
+    }
+
+    fn timestamp(&self) -> DateTime<Utc> {
+        let metadata = match self {
+            Element::Node(node) => &node.metadata,
+            Element::Way(way) => &way.metadata,
+            Element::Relation(relation) => &relation.metadata,
+        };
+        metadata.as_ref().unwrap().timestamp
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -157,70 +176,47 @@ enum Action {
     Delete(AugmentedElement, AugmentedElement),
 }
 
-struct DiffBuilder<'txn> {
-    elements: BTreeSet<ElementId>,
-    before: Option<Snapshot<'txn>>,
-    after: Option<Snapshot<'txn>>,
+/// Represents a subset of the changes in the input augmented diff.
+#[derive(Default)]
+struct DiffBuilder {
+    /// For each element ID, the start and end indices in the timeline of
+    /// the edits that affected it (either directly or by propagation from
+    /// a child element). In the resulting diff, this element's <old> side
+    /// will be the state just before the first of these changes and the
+    /// <new> side will be the state just after.
+    spans: BTreeMap<ElementId, (usize, usize)>,
 }
 
-impl<'txn> DiffBuilder<'txn> {
-    /// Builds the action for one element, or None if the element produces no
-    /// action in this diff.
-    fn action(&self, after: &Snapshot<'txn>, element_id: ElementId) -> Option<Action> {
-        let before = self.before.as_ref().unwrap();
-        let old = before.get_augmented_element(element_id);
-        let new = after.get_augmented_element(element_id);
-
-        match (old, new) {
-            (Some(old), Some(new)) => {
-                if new.visible() {
-                    Some(Action::Modify(old, new))
-                } else {
-                    Some(Action::Delete(old, new))
-                }
-            }
-            (Some(_old), None) => {
-                // valid actions should always have a 'new' side (even deletes; the new
-                // version has visible=false and has the changeset, user, timestamp etc.
-                // that deleted the element)
-                panic!("invalid delete (no new side) for {:?}", element_id);
-            }
-            (None, Some(new)) => {
-                if !new.visible() {
-                    // Element was created and then deleted within this diff window,
-                    // so we don't emit any action
-                    return None;
-                }
-                Some(Action::Create(new))
-            }
-            (None, None) => None,
-        }
+impl DiffBuilder {
+    /// Records a change at `pos` affecting `element_id`. Must be called in
+    /// timeline order.
+    fn touch(&mut self, element_id: ElementId, pos: usize) {
+        self.spans
+            .entry(element_id)
+            .and_modify(|(_, last)| *last = pos)
+            .or_insert((pos, pos));
     }
 
-    /// Writes the diff as augmented diff XML. Each action is built, written
-    /// and dropped before the next one, because a diff that touches many large
-    /// relations does not fit in memory as a whole.
-    ///
-    /// Actions come out sorted by element type (nodes, ways, relations) and then
-    /// by id, which is the iteration order of `BTreeSet<ElementId>`.
-    fn write<W: Write>(&self, out: &mut W) -> std::io::Result<()> {
+    /// Writes the diff as augmented diff XML. Actions are emitted in order by
+    /// their OSM element type and ID (nodes, then ways, then relations).
+    fn write<W: Write>(
+        &self,
+        tables: &Tables,
+        history: &History,
+        out: &mut W,
+    ) -> std::io::Result<()> {
         out.write_all(b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")?;
 
-        // The root's open tag is written with the first action, so that a diff
-        // with no actions gets a self-closing root. `after` is None when the
-        // .osc file was empty.
         let mut is_empty = true;
-        if let Some(after) = self.after.as_ref() {
-            for element_id in self.elements.iter() {
-                let Some(action) = self.action(after, *element_id) else {
-                    continue;
-                };
-                if is_empty {
-                    out.write_all(b"<osm version=\"0.6\" generator=\"osmx-rs\">\n")?;
-                    is_empty = false;
-                }
-                write_action(out, &action)?;
+        for (element_id, span) in self.spans.iter() {
+            let Some(action) = action(tables, history, *element_id, *span) else {
+                continue;
+            };
+            if is_empty {
+                out.write_all(b"<osm version=\"0.6\" generator=\"osmx-rs\">\n")?;
+                is_empty = false;
             }
+            write_action(out, &action)?;
         }
 
         if is_empty {
@@ -231,8 +227,55 @@ impl<'txn> DiffBuilder<'txn> {
     }
 }
 
-struct Snapshot<'txn> {
-    txn: &'txn osmx::Transaction<'txn>,
+/// Builds the action for one element whose changes span timeline positions
+/// `first..=last`, or None if the element produces no action.
+fn action(
+    tables: &Tables,
+    history: &History,
+    element_id: ElementId,
+    (first, last): (usize, usize),
+) -> Option<Action> {
+    let before = View {
+        tables,
+        history,
+        cutoff: first,
+    };
+    let after = View {
+        tables,
+        history,
+        cutoff: last + 1,
+    };
+    let old = before.get_augmented_element(element_id);
+    let new = after.get_augmented_element(element_id);
+
+    match (old, new) {
+        (Some(old), Some(new)) => {
+            if new.visible() {
+                Some(Action::Modify(old, new))
+            } else {
+                Some(Action::Delete(old, new))
+            }
+        }
+        (Some(_old), None) => {
+            // valid actions should always have a 'new' side (even deletes; the new
+            // version has visible=false and has the changeset, user, timestamp etc.
+            // that deleted the element)
+            panic!("invalid delete (no new side) for {:?}", element_id);
+        }
+        (None, Some(new)) => {
+            if !new.visible() {
+                // Element was created and then deleted within this diff window,
+                // so we don't emit any action
+                return None;
+            }
+            Some(Action::Create(new))
+        }
+        (None, None) => None,
+    }
+}
+
+/// The tables of the .osmx database
+struct Tables<'txn> {
     locations: osmx::Locations<'txn>,
     nodes: osmx::Nodes<'txn>,
     ways: osmx::Ways<'txn>,
@@ -240,35 +283,87 @@ struct Snapshot<'txn> {
     node_ways: osmx::JoinTable<'txn>,
     node_relations: osmx::JoinTable<'txn>,
     way_relations: osmx::JoinTable<'txn>,
-
-    elements: HashMap<ElementId, Element>,
 }
 
-impl<'txn> Snapshot<'txn> {
+impl<'txn> Tables<'txn> {
     fn new(txn: &'txn osmx::Transaction<'txn>) -> Result<Self, Box<dyn Error>> {
-        let locations = txn.locations()?;
-        let nodes = txn.nodes()?;
-        let ways = txn.ways()?;
-        let relations = txn.relations()?;
-        let node_ways = txn.node_ways()?;
-        let node_relations = txn.node_relations()?;
-        let way_relations = txn.way_relations()?;
-
         Ok(Self {
-            txn,
-            locations,
-            nodes,
-            ways,
-            relations,
-            node_ways,
-            node_relations,
-            way_relations,
-            elements: HashMap::new(),
+            locations: txn.locations()?,
+            nodes: txn.nodes()?,
+            ways: txn.ways()?,
+            relations: txn.relations()?,
+            node_ways: txn.node_ways()?,
+            node_relations: txn.node_relations()?,
+            way_relations: txn.way_relations()?,
         })
+    }
+}
+
+/// Every element version in the .osc file, tagged with its timeline position.
+#[derive(Default)]
+struct History {
+    versions: HashMap<ElementId, Vec<(usize, Element)>>,
+
+    // Memberships that appear in any way or relation version in the .osc file,
+    // which the database's join tables don't know about. Whether a membership
+    // holds at a given time is checked against that version of the parent when
+    // building an action.
+    node_ways: HashMap<u64, BTreeSet<u64>>,
+    node_relations: HashMap<u64, BTreeSet<u64>>,
+    way_relations: HashMap<u64, BTreeSet<u64>>,
+}
+
+impl History {
+    /// Adds a version. Must be called in timeline order.
+    fn push(&mut self, pos: usize, element_id: ElementId, element: Element) {
+        match &element {
+            Element::Node(_) => {}
+            Element::Way(way) => {
+                for node_id in &way.nodes {
+                    self.node_ways.entry(*node_id).or_default().insert(way.id);
+                }
+            }
+            Element::Relation(relation) => {
+                for member in &relation.members {
+                    let index = match member.id {
+                        ElementId::Node(id) => self.node_relations.entry(id),
+                        ElementId::Way(id) => self.way_relations.entry(id),
+                        ElementId::Relation(_) => continue,
+                    };
+                    index.or_default().insert(relation.id);
+                }
+            }
+        }
+        self.versions
+            .entry(element_id)
+            .or_default()
+            .push((pos, element));
+    }
+
+    /// The latest version of an element before timeline position `cutoff`, or
+    /// None if the .osc file has no such version.
+    fn get(&self, element_id: ElementId, cutoff: usize) -> Option<&Element> {
+        let versions = self.versions.get(&element_id)?;
+        let i = versions.partition_point(|(pos, _)| *pos < cutoff);
+        i.checked_sub(1).map(|i| &versions[i].1)
+    }
+}
+
+/// The state of the data at one point in the timeline: the database plus all
+/// changes in the .osc file before position `cutoff`.
+struct View<'a, 'txn> {
+    tables: &'a Tables<'txn>,
+    history: &'a History,
+    cutoff: usize,
+}
+
+impl<'a, 'txn> View<'a, 'txn> {
+    fn element(&self, element_id: ElementId) -> Option<&'a Element> {
+        self.history.get(element_id, self.cutoff)
     }
 
     fn get_augmented_element(&self, element_id: ElementId) -> Option<AugmentedElement> {
-        if let Some(element) = self.elements.get(&element_id) {
+        if let Some(element) = self.element(element_id) {
             let augmented_element = match element {
                 Element::Node(node) => AugmentedElement::Node(node.clone()),
                 Element::Way(way) => {
@@ -318,12 +413,12 @@ impl<'txn> Snapshot<'txn> {
         } else {
             match element_id {
                 ElementId::Node(id) => {
-                    let loc = self.locations.get(id)?;
+                    let loc = self.tables.locations.get(id)?;
                     let version = loc.version();
                     let visible = true; // implicit (deleted elements are not kept in the osmx database)
                     let lon: f64 = loc.lon();
                     let lat: f64 = loc.lat();
-                    let (metadata, tags) = if let Some(node) = self.nodes.get(id) {
+                    let (metadata, tags) = if let Some(node) = self.tables.nodes.get(id) {
                         let metadata = Some(Metadata {
                             changeset: node.metadata().changeset() as u64,
                             timestamp: Utc
@@ -352,7 +447,7 @@ impl<'txn> Snapshot<'txn> {
                     }))
                 }
                 ElementId::Way(id) => {
-                    let way = self.ways.get(id)?;
+                    let way = self.tables.ways.get(id)?;
                     let version = way.metadata().version();
                     let visible = true; // implicit (deleted elements are not kept in the osmx database)
                     let nodes = way
@@ -382,7 +477,7 @@ impl<'txn> Snapshot<'txn> {
                     }))
                 }
                 ElementId::Relation(id) => {
-                    let relation = self.relations.get(id)?;
+                    let relation = self.tables.relations.get(id)?;
                     let version = relation.metadata().version();
                     let visible = true; // implicit (deleted elements are not kept in the osmx database)
                     let members = relation
@@ -420,10 +515,6 @@ impl<'txn> Snapshot<'txn> {
                 }
             }
         }
-    }
-
-    fn set_element(&mut self, element_id: ElementId, element: Element) {
-        self.elements.insert(element_id, element);
     }
 
     fn resolve_way_node(&self, parent_way_id: u64, node_id: u64) -> WayNode {
@@ -474,7 +565,7 @@ impl<'txn> Snapshot<'txn> {
 
     /// Build an AugmentedElement::Relation without resolving its members.
     fn get_relation_stub(&self, id: u64) -> Option<AugmentedElement> {
-        if let Some(Element::Relation(relation)) = self.elements.get(&ElementId::Relation(id)) {
+        if let Some(Element::Relation(relation)) = self.element(ElementId::Relation(id)) {
             return Some(AugmentedElement::Relation(AugmentedRelation {
                 id: relation.id,
                 version: relation.version,
@@ -484,7 +575,7 @@ impl<'txn> Snapshot<'txn> {
                 tags: relation.tags.clone(),
             }));
         }
-        let relation = self.relations.get(id)?;
+        let relation = self.tables.relations.get(id)?;
         let metadata = Some(Metadata {
             changeset: relation.metadata().changeset() as u64,
             timestamp: Utc
@@ -507,21 +598,56 @@ impl<'txn> Snapshot<'txn> {
             tags,
         }))
     }
-}
 
-impl<'txn> Clone for Snapshot<'txn> {
-    fn clone(&self) -> Self {
-        Self {
-            txn: self.txn,
-            locations: self.txn.locations().unwrap(),
-            nodes: self.txn.nodes().unwrap(),
-            ways: self.txn.ways().unwrap(),
-            relations: self.txn.relations().unwrap(),
-            node_ways: self.txn.node_ways().unwrap(),
-            node_relations: self.txn.node_relations().unwrap(),
-            way_relations: self.txn.way_relations().unwrap(),
-            elements: self.elements.clone(),
-        }
+    /// Ids of the ways that contain a node.
+    fn parent_ways(&self, node_id: u64) -> Vec<u64> {
+        let in_db: BTreeSet<u64> = self.tables.node_ways.get(node_id).collect();
+        let in_osc = self.history.node_ways.get(&node_id);
+        let candidates: BTreeSet<u64> = in_db
+            .iter()
+            .chain(in_osc.into_iter().flatten())
+            .copied()
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|way_id| match self.element(ElementId::Way(*way_id)) {
+                None => in_db.contains(way_id),
+                Some(Element::Way(way)) => way.visible && way.nodes.contains(&node_id),
+                Some(other) => panic!("expected way, got {:?}", other),
+            })
+            .collect()
+    }
+
+    /// Ids of the relations that have a node or way as a member.
+    fn parent_relations(&self, child: ElementId) -> Vec<u64> {
+        let (in_db, in_osc): (BTreeSet<u64>, _) = match child {
+            ElementId::Node(id) => (
+                self.tables.node_relations.get(id).collect(),
+                self.history.node_relations.get(&id),
+            ),
+            ElementId::Way(id) => (
+                self.tables.way_relations.get(id).collect(),
+                self.history.way_relations.get(&id),
+            ),
+            ElementId::Relation(_) => panic!("parents of relations are not tracked"),
+        };
+        let candidates: BTreeSet<u64> = in_db
+            .iter()
+            .chain(in_osc.into_iter().flatten())
+            .copied()
+            .collect();
+        candidates
+            .into_iter()
+            .filter(
+                |relation_id| match self.element(ElementId::Relation(*relation_id)) {
+                    None => in_db.contains(relation_id),
+                    Some(Element::Relation(relation)) => {
+                        relation.visible && relation.members.iter().any(|m| m.id == child)
+                    }
+                    Some(other) => panic!("expected relation, got {:?}", other),
+                },
+            )
+            .collect()
     }
 }
 
@@ -689,121 +815,123 @@ fn parse_osc(osc_filename: &str) -> Result<Vec<Change>, Box<dyn Error>> {
     Ok(changes)
 }
 
+/// Orders changes by timestamp, keeping file order for ties.
+///
+/// Replication files are sorted by (type, id, version) rather than by time, so
+/// we need to sort them chronologically before construcing diffs from intervals.
+fn timeline(changes: Vec<Change>) -> Vec<Change> {
+    let mut order: Vec<usize> = (0..changes.len()).collect();
+    order.sort_by_key(|&i| changes[i].3.timestamp());
+
+    let mut last_versions: HashMap<ElementId, u32> = HashMap::new();
+    for &i in &order {
+        let (element_id, _, _, element) = &changes[i];
+        let version = element.version();
+        if let Some(last) = last_versions.insert(*element_id, version) {
+            if version <= last {
+                eprintln!(
+                    "warning: timestamps of {:?} are not in version order; using file order",
+                    element_id
+                );
+                return changes;
+            }
+        }
+    }
+
+    let mut changes: Vec<Option<Change>> = changes.into_iter().map(Some).collect();
+    order.iter().map(|&i| changes[i].take().unwrap()).collect()
+}
+
 pub fn run(args: &CliArgs) -> Result<(), Box<dyn Error>> {
     let osc_filename: &str = args.osc_file.as_os_str().to_str().unwrap();
 
-    let changes = parse_osc(osc_filename)?;
+    let changes = timeline(parse_osc(osc_filename)?);
+    let num_changes = changes.len();
 
     let db = osmx::Database::open(&args.osmx_file)?;
     let txn = osmx::Transaction::begin(&db)?;
-    let mut snapshot = Snapshot::new(&txn)?;
+    let tables = Tables::new(&txn)?;
 
-    let all_changeset_ids: HashSet<ChangesetId> =
-        changes.iter().map(|(_, cid, _, _)| *cid).collect();
-    let last_indices: HashMap<ChangesetId, usize> = all_changeset_ids
-        .iter()
-        .map(|cid| {
-            (
-                *cid,
-                changes
-                    .iter()
-                    .rposition(|(_, cid2, _, _)| *cid2 == *cid)
-                    .unwrap(),
-            )
-        })
-        .collect();
+    let mut history = History::default();
+    let mut edits = Vec::with_capacity(num_changes);
+    for (pos, (element_id, changeset_id, action_type, element)) in changes.into_iter().enumerate() {
+        history.push(pos, element_id, element);
+        edits.push((element_id, changeset_id, action_type));
+    }
 
     let mut diff_builders: HashMap<ChangesetId, DiffBuilder> = HashMap::new();
 
-    if !args.split {
-        diff_builders.insert(
-            0,
-            DiffBuilder {
-                elements: BTreeSet::new(),
-                before: Some(snapshot.clone()),
-                after: None,
-            },
-        );
-    }
+    for (pos, (element_id, changeset_id, action_type)) in edits.into_iter().enumerate() {
+        let key = if args.split { changeset_id } else { 0 };
+        let diff_builder = diff_builders.entry(key).or_default();
 
-    for (idx, (element_id, changeset_id, action_type, element)) in changes.into_iter().enumerate() {
-        let diff_builder = if args.split {
-            diff_builders
-                .entry(changeset_id)
-                .or_insert_with(|| DiffBuilder {
-                    elements: BTreeSet::new(),
-                    before: Some(snapshot.clone()),
-                    after: None,
-                })
-        } else {
-            diff_builders.get_mut(&0).unwrap()
-        };
-
-        diff_builder.elements.insert(element_id);
+        diff_builder.touch(element_id, pos);
 
         if action_type == ActionType::Modify {
+            // Parents are looked up as of just before this change, to account
+            // for membership changes from earlier in the .osc file
+            let view = View {
+                tables: &tables,
+                history: &history,
+                cutoff: pos,
+            };
             match element_id {
                 ElementId::Node(node_id) => {
                     // Node moved (or had tags changed); propagate to parent ways and
                     // relations, plus the parent relations of those parent ways.
-                    for way_id in snapshot.node_ways.get(node_id) {
-                        diff_builder.elements.insert(ElementId::Way(way_id));
-                        for relation_id in snapshot.way_relations.get(way_id) {
-                            diff_builder
-                                .elements
-                                .insert(ElementId::Relation(relation_id));
+                    for way_id in view.parent_ways(node_id) {
+                        diff_builder.touch(ElementId::Way(way_id), pos);
+                        for relation_id in view.parent_relations(ElementId::Way(way_id)) {
+                            diff_builder.touch(ElementId::Relation(relation_id), pos);
                         }
                     }
 
-                    for relation_id in snapshot.node_relations.get(node_id) {
-                        diff_builder
-                            .elements
-                            .insert(ElementId::Relation(relation_id));
+                    for relation_id in view.parent_relations(element_id) {
+                        diff_builder.touch(ElementId::Relation(relation_id), pos);
                     }
                 }
-                ElementId::Way(way_id) => {
+                ElementId::Way(_) => {
                     // Way's node list or tags changed; propagate to parent relations.
-                    for relation_id in snapshot.way_relations.get(way_id) {
-                        diff_builder
-                            .elements
-                            .insert(ElementId::Relation(relation_id));
+                    for relation_id in view.parent_relations(element_id) {
+                        diff_builder.touch(ElementId::Relation(relation_id), pos);
                     }
                 }
                 ElementId::Relation(_) => {}
             }
         }
-
-        snapshot.set_element(element_id, element);
-
-        if idx == last_indices[&changeset_id] {
-            diff_builder.after = Some(snapshot.clone());
-        }
     }
 
     if args.split {
-        // Create the output directory if it doesn't exist
         std::fs::create_dir_all(&args.output_path)?;
 
         for (id, diff_builder) in diff_builders.iter() {
             let output_filename = args.output_path.join(format!("{}.adiff", id));
-            write_adiff_file(&output_filename, diff_builder)?;
+            write_adiff_file(&output_filename, diff_builder, &tables, &history)?;
         }
     } else {
-        write_adiff_file(&args.output_path, diff_builders.get(&0).unwrap())?;
+        let mut diff_builder = diff_builders.remove(&0).unwrap_or_default();
+        for span in diff_builder.spans.values_mut() {
+            *span = (0, num_changes - 1);
+        }
+        write_adiff_file(&args.output_path, &diff_builder, &tables, &history)?;
     }
 
     Ok(())
 }
 
-fn write_adiff_file(path: &Path, diff_builder: &DiffBuilder) -> std::io::Result<()> {
+fn write_adiff_file(
+    path: &Path,
+    diff_builder: &DiffBuilder,
+    tables: &Tables,
+    history: &History,
+) -> std::io::Result<()> {
     let mut out = BufWriter::new(std::fs::File::create(path)?);
-    diff_builder.write(&mut out)?;
+    diff_builder.write(tables, history, &mut out)?;
     out.flush()
 }
 
 // The adiff is written straight to the output as text instead of building an
-// XML document in memory first. The layout (two-space indent, self-closing
-// empty elements) matches what libxml2 produced before.
+// XML document in memory first.
 
 fn write_action<W: Write>(out: &mut W, action: &Action) -> std::io::Result<()> {
     match action {
@@ -832,7 +960,7 @@ fn write_indent<W: Write>(out: &mut W, indent: usize) -> std::io::Result<()> {
     write!(out, "{:indent$}", "")
 }
 
-/// Writes ` name="value"`, escaping the value the way libxml2 does.
+/// Writes ` name="value"`, escaping the value correctly.
 fn write_attr<W: Write>(out: &mut W, name: &str, value: &str) -> std::io::Result<()> {
     write!(out, " {name}=\"")?;
     let mut rest = value;

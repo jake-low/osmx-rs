@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs test">
+  <node id="1" version="1" lat="0.0" lon="0.001" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <relation id="1" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <member type="relation" ref="2" role="subarea"/>
+    <tag k="name" v="Outer"/>
+    <tag k="type" v="boundary"/>
+  </relation>
+  <relation id="2" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <member type="node" ref="1" role="label"/>
+    <tag k="name" v="Inner"/>
+    <tag k="type" v="boundary"/>
+  </relation>
+</osm>

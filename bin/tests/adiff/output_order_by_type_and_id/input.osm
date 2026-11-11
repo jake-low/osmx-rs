@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs test">
+  <node id="1" version="1" lat="0.0" lon="0.0" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="2" version="1" lat="0.0" lon="0.001" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser"/>
+  <node id="9" version="1" lat="0.0" lon="0.009" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <node id="10" version="1" lat="0.0" lon="0.01" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <tag k="amenity" v="bench"/>
+  </node>
+  <way id="9" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="path"/>
+  </way>
+  <way id="10" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <nd ref="1"/>
+    <nd ref="2"/>
+    <tag k="highway" v="track"/>
+  </way>
+  <relation id="1" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+    <tag k="route_master" v="bus"/>
+    <tag k="type" v="route_master"/>
+  </relation>
+</osm>

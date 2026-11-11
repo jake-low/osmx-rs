@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="osmx-rs">
+  <action type="modify">
+    <old>
+      <node id="13000000001" version="1" lon="0.0010000" lat="0.0000000"/>
+    </old>
+    <new>
+      <node id="13000000001" version="2" lon="0.0010000" lat="0.0005000" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice"/>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <way id="5000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0000000" minlon="0.0010000" maxlat="0.0000000" maxlon="0.0020000"/>
+        <nd ref="13000000001" version="1" lon="0.0010000" lat="0.0000000"/>
+        <nd ref="13000000002" version="1" lon="0.0020000" lat="0.0000000"/>
+        <tag k="highway" v="path"/>
+      </way>
+    </old>
+    <new>
+      <way id="5000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0000000" minlon="0.0010000" maxlat="0.0005000" maxlon="0.0020000"/>
+        <nd ref="13000000001" version="2" lon="0.0010000" lat="0.0005000"/>
+        <nd ref="13000000002" version="1" lon="0.0020000" lat="0.0000000"/>
+        <tag k="highway" v="path"/>
+      </way>
+    </new>
+  </action>
+  <action type="modify">
+    <old>
+      <relation id="20000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0000000" minlon="0.0010000" maxlat="0.0000000" maxlon="0.0020000"/>
+        <member type="way" ref="5000000001" role="">
+          <nd ref="13000000001" version="1" lon="0.0010000" lat="0.0000000"/>
+          <nd ref="13000000002" version="1" lon="0.0020000" lat="0.0000000"/>
+        </member>
+        <tag k="type" v="route"/>
+      </relation>
+    </old>
+    <new>
+      <relation id="20000000001" version="1" changeset="100" timestamp="2024-01-01T00:00:00Z" uid="1" user="testuser">
+        <bounds minlat="0.0000000" minlon="0.0010000" maxlat="0.0005000" maxlon="0.0020000"/>
+        <member type="way" ref="5000000001" role="">
+          <nd ref="13000000001" version="2" lon="0.0010000" lat="0.0005000"/>
+          <nd ref="13000000002" version="1" lon="0.0020000" lat="0.0000000"/>
+        </member>
+        <tag k="type" v="route"/>
+      </relation>
+    </new>
+  </action>
+</osm>

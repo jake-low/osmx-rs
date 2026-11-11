@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <node id="1" version="2" lat="0.0005" lon="0.0" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice"/>
+    <way id="1" version="2" changeset="201" timestamp="2024-02-01T00:00:20Z" uid="3" user="bob">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <nd ref="3"/>
+      <tag k="highway" v="path"/>
+    </way>
+    <way id="2" version="2" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <nd ref="4"/>
+      <nd ref="5"/>
+      <tag k="highway" v="path"/>
+      <tag k="surface" v="dirt"/>
+    </way>
+  </modify>
+</osmChange>

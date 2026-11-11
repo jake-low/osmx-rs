@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <way id="1" version="2" changeset="201" timestamp="2024-02-01T00:00:20Z" uid="3" user="bob">
+      <nd ref="1"/>
+      <nd ref="2"/>
+      <nd ref="3"/>
+      <tag k="highway" v="path"/>
+    </way>
+  </modify>
+  <create>
+    <relation id="1" version="1" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <member type="way" ref="1" role=""/>
+      <tag k="route" v="hiking"/>
+      <tag k="type" v="route"/>
+    </relation>
+  </create>
+</osmChange>

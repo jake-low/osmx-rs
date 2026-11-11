@@ -27,8 +27,9 @@ update_test() {
   "$BIN" expand "$tmp/in.pbf" "$tmp/test.osmx"
 
   if [[ -d "$dir/expected" ]]; then
-    rm -rf "$dir/expected"
-    mkdir -p "$dir/expected"
+    # Remove only the .adiff files, so that a .gitkeep in an otherwise empty
+    # expected/ directory survives
+    rm -f "$dir/expected"/*.adiff
     "$BIN" augmented-diff --split "$tmp/test.osmx" "$dir/edits.osc" "$dir/expected"
     echo "wrote $dir/expected/*.adiff"
   fi

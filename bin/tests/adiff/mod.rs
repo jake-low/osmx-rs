@@ -60,19 +60,34 @@ macro_rules! adiff_test_split {
                 ctx.setup_test(test_dir)?;
                 ctx.run_adiff(test_dir, true)?;
 
-                for file in test_dir.join("expected").read_dir()? {
-                    let file = file.unwrap();
-                    let expected = std::fs::read_to_string(file.path())?;
-                    let actual = std::fs::read_to_string(
-                        ctx.temp_dir.path().join("actual").join(file.file_name()),
-                    )?;
-                    match ctx.compare(&expected, &actual) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            mem::forget(ctx.temp_dir);
-                            return Err(e);
-                        }
+                let expected_dir = test_dir.join("expected");
+                let actual_dir = ctx.temp_dir.path().join("actual");
+                let expected_files = crate::list_adiffs(&expected_dir)?;
+                let actual_files = crate::list_adiffs(&actual_dir)?;
+                if expected_files != actual_files {
+                    mem::forget(ctx.temp_dir);
+                    anyhow::bail!(
+                        "expected files {:?} but got {:?}",
+                        expected_files,
+                        actual_files
+                    );
+                }
+
+                // Compare every file before failing, so that all mismatches
+                // are reported at once.
+                let mut mismatched = Vec::new();
+                for name in expected_files {
+                    let expected = std::fs::read_to_string(expected_dir.join(&name))?;
+                    let actual = std::fs::read_to_string(actual_dir.join(&name))?;
+                    eprintln!("comparing {name}");
+                    if ctx.compare(&expected, &actual).is_err() {
+                        mismatched.push(name);
                     }
+                }
+
+                if !mismatched.is_empty() {
+                    mem::forget(ctx.temp_dir);
+                    anyhow::bail!("output does not match expected files {:?}", mismatched);
                 }
 
                 Ok(())
@@ -120,6 +135,27 @@ adiff_test!(modify_way_remove_node);
 adiff_test!(cross_changeset_create_then_delete);
 adiff_test!(cross_changeset_modify_then_delete);
 
+adiff_test!(relation_member_relation);
+adiff_test!(relation_membership_cycle);
+adiff_test!(relation_same_member_twice);
+adiff_test!(modify_relation_to_empty);
+adiff_test!(way_with_dangling_nodes);
+adiff_test!(xml_escape_user_role_whitespace);
+adiff_test!(output_order_by_type_and_id);
+adiff_test!(large_ids);
+adiff_test!(undelete_same_osc);
+
+adiff_test!(split_interleaved_unrelated);
+adiff_test!(split_same_node_interleaved);
+adiff_test!(split_create_then_modify_interleaved);
+adiff_test!(split_modify_then_delete_interleaved);
+adiff_test!(split_higher_version_lower_changeset);
+adiff_test!(split_way_tags_then_node_moved);
+adiff_test!(split_node_added_to_way_then_moved);
+adiff_test!(split_node_removed_from_way_then_moved);
+adiff_test!(split_relation_created_then_member_modified);
+adiff_test!(split_changeset_brackets_another);
+
 adiff_test_split!(create_cafe_node);
 adiff_test_split!(split_two_changesets_one_node);
 adiff_test_split!(cross_changeset_modify);
@@ -128,6 +164,34 @@ adiff_test_split!(cross_changeset_modify_relation);
 adiff_test_split!(cross_changeset_create_then_modify);
 adiff_test_split!(cross_changeset_create_then_delete);
 adiff_test_split!(cross_changeset_modify_then_delete);
+adiff_test_split!(split_empty_osc);
+adiff_test_split!(undelete_same_osc);
+adiff_test_split!(split_interleaved_unrelated);
+adiff_test_split!(split_same_node_interleaved);
+adiff_test_split!(split_create_then_modify_interleaved);
+adiff_test_split!(split_modify_then_delete_interleaved);
+adiff_test_split!(split_higher_version_lower_changeset);
+adiff_test_split!(split_way_tags_then_node_moved);
+adiff_test_split!(split_node_moved_way_edited_later);
+adiff_test_split!(split_node_moved_way_deleted_later);
+adiff_test_split!(split_node_added_to_way_then_moved);
+adiff_test_split!(split_node_removed_from_way_then_moved);
+adiff_test_split!(split_relation_created_then_member_modified);
+adiff_test_split!(split_changeset_brackets_another);
+adiff_test_split!(split_timestamps_out_of_version_order);
+
+/// Sorted names of the .adiff files in a directory. Other files are ignored.
+pub fn list_adiffs(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in dir.read_dir()? {
+        let name = entry?.file_name().into_string().unwrap();
+        if name.ends_with(".adiff") {
+            names.push(name);
+        }
+    }
+    names.sort();
+    Ok(names)
+}
 
 pub struct TestContext {
     pub temp_dir: TempDir,
@@ -183,12 +247,7 @@ impl TestContext {
     }
 
     fn binary_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .join("target")
-            .join("debug")
-            .join("osmx-rs")
+        PathBuf::from(env!("CARGO_BIN_EXE_osmx-rs"))
     }
 
     pub fn run_adiff(&self, test_dir: &Path, split: bool) -> anyhow::Result<()> {

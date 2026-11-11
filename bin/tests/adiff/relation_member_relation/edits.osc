@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="osmx-rs test">
+  <modify>
+    <relation id="1" version="2" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <member type="relation" ref="2" role="subarea"/>
+      <member type="relation" ref="99" role="subarea"/>
+      <tag k="name" v="Outer"/>
+      <tag k="type" v="boundary"/>
+    </relation>
+    <relation id="2" version="2" changeset="200" timestamp="2024-02-01T00:00:10Z" uid="2" user="alice">
+      <member type="node" ref="1" role="label"/>
+      <tag k="name" v="Inner 2"/>
+      <tag k="type" v="boundary"/>
+    </relation>
+  </modify>
+</osmChange>
