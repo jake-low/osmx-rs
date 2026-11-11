@@ -125,11 +125,8 @@ impl<'a> Way<'a> {
     /// A way with no nodes is not closed; a way with one node is. A closed way
     /// is not necessarily a valid ring (that requires at least 4 nodes).
     pub fn is_closed(&self) -> bool {
-        let mut nodes = self.nodes();
-        let Some(first) = nodes.next() else {
-            return false;
-        };
-        first == nodes.last().unwrap_or(first)
+        let nodes = self.reader.get().unwrap().get_nodes().unwrap();
+        !nodes.is_empty() && nodes.get(0) == nodes.get(nodes.len() - 1)
     }
 
     /// Returns [Metadata] about this Way (its current version and the changeset
