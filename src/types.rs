@@ -120,16 +120,16 @@ impl<'a> Way<'a> {
         self.reader.get().unwrap().get_nodes().unwrap().iter()
     }
 
-    /// Returns if the way is a closed ring (i.e. its first and last node have the same ID)
+    /// Returns true if the way's first and last node have the same ID.
     ///
-    /// Ways with fewer than two nodes are never considered closed.
+    /// A way with no nodes is not closed; a way with one node is. A closed way
+    /// is not necessarily a valid ring (that requires at least 4 nodes).
     pub fn is_closed(&self) -> bool {
         let mut nodes = self.nodes();
-        match (nodes.next(), nodes.last()) {
-            (Some(first), Some(last)) => first == last,
-            // zero nodes: (None, None); one node: (Some, None)
-            _ => false,
-        }
+        let Some(first) = nodes.next() else {
+            return false;
+        };
+        first == nodes.last().unwrap_or(first)
     }
 
     /// Returns [Metadata] about this Way (its current version and the changeset
@@ -310,8 +310,8 @@ mod tests {
     }
 
     #[test]
-    fn single_node_way_is_not_closed() {
-        assert!(!is_closed(&[1]));
+    fn single_node_way_is_closed() {
+        assert!(is_closed(&[1]));
     }
 
     #[test]
